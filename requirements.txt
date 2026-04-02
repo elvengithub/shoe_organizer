@@ -1,0 +1,15 @@
+# Raspberry Pi 4: use python3 -m venv venv && source venv/bin/activate
+flask>=3.0.0
+# AI camera uses OpenCV heuristics in src/ai_camera.py; optional later: tflite-runtime + .tflite model on Pi
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+PyYAML>=6.0
+python-dotenv>=1.0.0
+
+# Pi runtime for Phase 2 TFLite shoe model (optional):
+# tflite-runtime>=2.14.0
+
+# Install on Pi only (GPIO + optional sensors):
+# RPi.GPIO>=0.7.1
+# adafruit-circuitpython-dht  # or use I2C BME280 modules on a bus multiplexer

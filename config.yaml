@@ -1,0 +1,174 @@
+# Pin map — BCM numbering. Adjust to your wiring.
+# Steppers: STEP, DIR, ENABLE (optional tie ENABLE low on driver if unused)
+steppers:
+  x: { step: 17, dir: 27, enable: 22 }   # GT2 belt axis (horizontal pick)
+  y: { step: 23, dir: 24, enable: 25 }   # GT2 belt axis (along slots)
+  z: { step: 5, dir: 6, enable: 13 }     # T8 lead screw (vertical / in-out)
+
+# Motion — tune after mechanical build
+motion:
+  # T8×8 single-start: 8 mm travel per revolution. NEMA 17 200 steps/rev @ 1/16 microstep
+  z_mm_per_rev: 8.0
+  z_steps_per_rev: 3200
+  # GT2 belt: steps per mm = (steps_per_rev * microsteps) / (2 * pitch_mm * pulley_teeth)
+  gt2_pitch_mm: 2.0
+  pulley_teeth: 20
+  motor_steps_per_rev: 200
+  microsteps: 16
+  max_feed_mm_s: 80
+  z_max_feed_mm_s: 15
+
+# Soft limit positions (mm from home); set after homing routine
+limits:
+  x_max: 300
+  y_max: 240
+  z_max: 120
+  # Y centers for storage slots, same order as compartments.storage_ids (2→6). Slot 1 = cleaning bay only.
+  compartment_y_mm: [35, 72, 109, 146, 183]
+
+# Six compartments: 1 = main cleaning bay (wash / camera / mech). 2–6 = storage (env + vent + switch).
+compartments:
+  main_id: 1
+  storage_ids: [2, 3, 4, 5, 6]
+  occupancy_gpio: { 2: 16, 3: 19, 4: 26, 5: 4, 6: 14 }  # LOW = occupied — reassign BCM if pins clash with steppers
+  vent_gpio: { 2: 20, 3: 21, 4: 12, 5: 15, 6: 18 }
+  # Occupancy: instructor toggle — closed = occupied (GPIO LOW with pull-up)
+  # DHT: optional; leave empty {} to use mock values on Pi until wired
+  dht_gpio: { 2: 7, 3: 8, 4: 11, 5: 9, 6: 10 }
+  # Optional Blinka names for real DHT22 (see Adafruit Pi pinout). If omitted, mock T/RH.
+  dht_board_pin: { 2: "D7", 3: "D8", 4: "D11", 5: "D9", 6: "D10" }
+
+# Camera: USB on Flask host and/or JPEG from ESP32 (MicroPython) — see README
+# source: usb | esp32 | prefer_esp32  (prefer_esp32 uses ESP frame when fresh, else USB)
+camera:
+  source: usb
+  index: 0
+  width: 640
+  height: 480
+  esp32_frame_ttl_seconds: 3.0
+
+# Optional: crop + CLAHE before gate, catalog, and dirt heuristics (same as reference images).
+# roi: fractions of frame width/height (0–1). Omit or set null to use full frame.
+# Fractions of frame (0–1). Default ≈ centered shoe ~65% wide, slightly low in frame (typical bay camera).
+# Set roi: null to disable cropping. Tweak x/y/w/h after you see the live view in the kiosk.
+vision_preprocess:
+  roi: { x: 0.15, y: 0.22, w: 0.70, h: 0.58 }
+  clahe_enabled: true
+  clahe_clip: 2.0
+  clahe_tile: 8
+
+# OpenCV shoe silhouette gate (server-side). Tune if real booth lighting differs.
+shoe_gate:
+  enabled: true
+  min_contour_area_ratio: 0.025
+  max_contour_area_ratio: 0.92
+  min_aspect_ratio: 1.1
+  max_aspect_ratio: 7.5
+  min_solidity: 0.32
+
+# Block faces / skin-dominated frames from being classified as shoes (same UI: "Not a shoe.").
+anti_face:
+  enabled: true
+  use_haar_frontal: true
+  use_haar_profile: true
+  haar_scale: 1.08
+  haar_min_neighbors: 5
+  haar_min_size: 28
+  min_face_area_ratio: 0.015
+  use_skin_pixel_ratio: true
+  skin_ratio_reject: 0.52
+  ycrcb_cr_min: 135
+  ycrcb_cr_max: 180
+  ycrcb_cb_min: 85
+  ycrcb_cb_max: 135
+
+# presenter.mode: camera — bay camera sees what is present; classification scope is shoes only
+#   (non-shoes → "Not a shoe."). Live stream + /api/camera/analyze.
+# presenter.mode: text — optional intake from POST /api/analyze description only (no camera).
+presenter:
+  mode: camera
+
+# Optional overrides for text-only classification (keyword lists merged with built-ins).
+text_classifier:
+  default_dirt_score: 0.18
+  # not_shoe_keywords: []
+  # shoe_keywords: []
+
+# ESP32 (MicroPython) environmental telemetry.
+# serial.port: "auto" scans for CH340/CP210x; or set "COM6", "/dev/ttyUSB0" etc.
+# compartment_id: which storage slot (2–6) receives merged T/RH/occupancy from the ESP32.
+# Ultrasonic NEAR_CM / MAX_RANGE are set in micropython/esp32_bio_telemetry.py (must match bay depth).
+esp32_telemetry:
+  enabled: true
+  compartment_id: 2
+  max_age_seconds: 8.0
+  use_ultrasonic_occupancy: true
+  serial:
+    port: auto
+    baud: 115200
+
+# Flask (touch LCD shows this in Chromium kiosk)
+server:
+  host: 0.0.0.0
+  port: 8080
+
+# Decision thresholds (tune with real images)
+vision:
+  dirt_edge_threshold: 0.12
+  leather_saturation_max: 45
+  sports_edge_min: 0.08
+
+wash:
+  hard_if_dirt_above: 0.35
+  sports_hard_if_dirt_above: 0.22
+  casual_hard_if_dirt_above: 0.28
+
+# Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)
+# Histogram fusion: HSV 2D + gray + LAB a–b (after same preprocess as live frame).
+# Raise min_match_score if wrong styles win; lower slightly if nothing ever matches.
+shoe_catalog:
+  enabled: true
+  path: datasets/shoes
+  min_match_score: 0.36
+  resize: 160
+  hist_h_bins: 24
+  hist_s_bins: 24
+  hist_gray_bins: 32
+  hist_lab_bins: 16
+  weight_hsv: 0.48
+  weight_gray: 0.22
+  weight_lab: 0.30
+  blend_bhattacharyya: false
+  bhattacharyya_mix: 0.25
+
+# Phase 1: non-shoe reference images (same ROI/CLAHE as live). Empty folder = no extra rejections.
+not_shoe_catalog:
+  enabled: true
+  path: datasets/not_shoe
+  min_score_to_reject: 0.45
+
+# Phase 2: binary shoe classifier (TFLite). Train on PC: pip install -r scripts/requirements-train.txt
+#   python scripts/train_shoe_binary.py
+#   Optional booth-aligned crops: add --align_preprocess (uses vision_preprocess below).
+#   Copy models/shoe_binary.tflite to Pi; set threshold from models/shoe_binary_metrics.json suggested_config.
+# Eval: python scripts/eval_shoe_binary.py --threshold 0.55
+shoe_binary:
+  enabled: false
+  model_path: models/shoe_binary.tflite
+  threshold: 0.55
+  input_size: 224
+  strict: false
+  skip_negative_gallery_after_binary: true
+
+# Phase 1: require consecutive frames before trusting "shoe" (intake + confirmed_is_shoe in /api/camera/analyze).
+classification_stability:
+  enabled: true
+  shoe_confirm_frames: 3
+  not_shoe_confirm_frames: 2
+
+# Phase 3: save preprocessed ROI when rejected as not-shoe (for dataset mining). Off by default.
+debug_capture:
+  enabled: false
+  save_rejects: true
+  path: datasets/captured_rejects
+  jpeg_quality: 82
