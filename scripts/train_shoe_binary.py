@@ -3,14 +3,27 @@
 Train a binary shoe classifier (MobileNetV2 head) and export models/shoe_binary.tflite.
 
   pip install -r scripts/requirements-train.txt
-  python scripts/train_shoe_binary.py
-  python scripts/train_shoe_binary.py --align_preprocess --epochs 20 --finetune_epochs 4
 
-Data (defaults merge all of these):
-  - Positives: datasets/shoe_binary/shoe, datasets/shoes (catalog tree), datasets/dirty_Shoe
-  - Negatives: datasets/shoe_binary/not_shoe, datasets/not_shoe
+Recommended (matches booth ROI + CLAHE at runtime):
+  python scripts/train_shoe_binary.py --align_preprocess
 
---align_preprocess: apply config.yaml vision_preprocess (ROI + CLAHE) like production inference.
+Full quality run (defaults are tuned for this):
+  python scripts/train_shoe_binary.py --align_preprocess --epochs 25 --finetune_epochs 8 --finetune_lr 1e-5
+
+Dataset tips (biggest impact on accuracy):
+  - Keep shoe:not_shoe counts close to 1:1 (add/remove images or duplicate minority with care).
+  - Put hard negatives under datasets/shoe_binary/not_shoe or datasets/not_shoe: slippers, socks,
+    bags, clothes, floor, shadows, hands — cuts false positives.
+  - Remove blurry images, wrong labels, and near-duplicates.
+
+--align_preprocess: ALWAYS use when the live system uses vision_preprocess (ROI + CLAHE); training
+then matches inference. Without it, full-frame photos train a different distribution.
+
+After training, copy suggested_config.shoe_binary.threshold from models/shoe_binary_metrics.json
+into config.yaml (do not keep 0.5/0.55 blindly — the JSON value is fit to your val split).
+
+Optional: --size 256 for more detail if the Pi can spare latency (must match shoe_binary.input_size).
+
 Normalization matches runtime (src/shoe_binary_tflite.py): rgb / 127.5 - 1.0
 
 Outputs:
@@ -119,8 +132,11 @@ def batch_tensors(
     align_preprocess: bool,
     cfg: dict | None,
     augment_flip: bool,
+    augment_strong: bool,
     rng: random.Random,
 ) -> tuple[np.ndarray, np.ndarray] | None:
+    import cv2
+
     xs: list[np.ndarray] = []
     ys: list[float] = []
     for p, y in items:
@@ -129,6 +145,13 @@ def batch_tensors(
             continue
         if augment_flip and rng.random() < 0.5:
             bgr = np.ascontiguousarray(bgr[:, ::-1, :])
+        if augment_strong:
+            if rng.random() < 0.3:
+                bgr = cv2.GaussianBlur(bgr, (3, 3), 0)
+            if rng.random() < 0.3:
+                alpha = 1.0 + (rng.random() - 0.5) * 0.4
+                beta = (rng.random() - 0.5) * 30.0
+                bgr = cv2.convertScaleAbs(bgr, alpha=alpha, beta=beta)
         t = bgr_to_model_input(bgr, size, align_preprocess, cfg)
         if t is None:
             continue
@@ -198,12 +221,22 @@ def main() -> None:
         ],
         help="Negative (not shoe) roots",
     )
-    parser.add_argument("--epochs", type=int, default=16)
-    parser.add_argument("--finetune_epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--finetune_epochs", type=int, default=8)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--finetune_lr", type=float, default=None, help="default: lr/5")
-    parser.add_argument("--size", type=int, default=224)
+    parser.add_argument(
+        "--finetune_lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for MobileNetV2 fine-tune phase (default 1e-5)",
+    )
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=224,
+        help="Square input side (224 default; use 256 for more detail if Pi can handle latency — update config.yaml)",
+    )
     parser.add_argument("--val_frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=str, default="models/shoe_binary.tflite")
@@ -212,7 +245,11 @@ def main() -> None:
         action="store_true",
         help="Apply config.yaml vision_preprocess (ROI+CLAHE) — use when images are full booth frames",
     )
-    parser.add_argument("--no_augment", action="store_true", help="Disable random horizontal flip")
+    parser.add_argument(
+        "--no_augment",
+        action="store_true",
+        help="Disable augmentation (horizontal flip, blur, brightness/contrast)",
+    )
     args = parser.parse_args()
 
     base = _repo_root()
@@ -250,6 +287,7 @@ def main() -> None:
         raise SystemExit("Validation split is empty; add more images or lower --val_frac")
 
     import tensorflow as tf
+    from sklearn.utils.class_weight import compute_class_weight
     from tensorflow import keras
     from tensorflow.keras import layers
     from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
@@ -257,9 +295,17 @@ def main() -> None:
     tf.random.set_seed(args.seed)
     np.random.seed(args.seed)
 
+    y_train_all = np.array([y for _, y in train_items], dtype=np.int32)
+    if len(np.unique(y_train_all)) < 2:
+        class_weights: dict[int, float] = {0: 1.0, 1: 1.0}
+    else:
+        cw = compute_class_weight("balanced", classes=np.array([0, 1]), y=y_train_all)
+        class_weights = {0: float(cw[0]), 1: float(cw[1])}
+
     def run_epoch(model: keras.Model, items: list, train: bool) -> tuple[float, float]:
         rng.shuffle(items)
         losses, accs = [], []
+        aug = train and not args.no_augment
         for i in range(0, len(items), args.batch):
             chunk = items[i : i + args.batch]
             bt = batch_tensors(
@@ -267,15 +313,14 @@ def main() -> None:
                 args.size,
                 args.align_preprocess,
                 cfg,
-                augment_flip=train and not args.no_augment,
+                augment_flip=aug,
+                augment_strong=aug,
                 rng=rng,
             )
             if bt is None:
                 continue
             xb, yb = bt
-            n0 = float(np.sum(yb == 0))
-            n1 = float(np.sum(yb == 1))
-            sw = np.where(yb == 0, (n0 + n1) / (2.0 * max(n0, 1.0)), (n0 + n1) / (2.0 * max(n1, 1.0)))
+            sw = np.array([class_weights[int(y)] for y in yb], dtype=np.float32)
             if train:
                 h = model.train_on_batch(xb, yb, sample_weight=sw)
             else:
@@ -302,16 +347,19 @@ def main() -> None:
         metrics=["accuracy"],
     )
 
-    print(f"train={len(train_items)} val={len(val_items)} shoe={n_pos} not_shoe={n_neg} size={args.size}")
+    print(
+        f"train={len(train_items)} val={len(val_items)} shoe={n_pos} not_shoe={n_neg} "
+        f"size={args.size} align_preprocess={args.align_preprocess} "
+        f"class_weights={class_weights}"
+    )
     for epoch in range(args.epochs):
         tr_l, tr_a = run_epoch(model, train_items, train=True)
         va_l, va_a = run_epoch(model, val_items, train=False)
         print(f"epoch {epoch + 1}/{args.epochs} train_loss={tr_l:.4f} acc={tr_a:.4f}  val_loss={va_l:.4f} val_acc={va_a:.4f}")
 
     base_model.trainable = True
-    ft_lr = args.finetune_lr if args.finetune_lr is not None else args.lr / 5
     model.compile(
-        optimizer=keras.optimizers.Adam(ft_lr),
+        optimizer=keras.optimizers.Adam(args.finetune_lr),
         loss="binary_crossentropy",
         metrics=["accuracy"],
     )
@@ -334,6 +382,7 @@ def main() -> None:
                 args.align_preprocess,
                 cfg,
                 augment_flip=False,
+                augment_strong=False,
                 rng=rng,
             )
             if bt is None:
@@ -373,6 +422,7 @@ def main() -> None:
         "input_size": args.size,
         "align_preprocess": args.align_preprocess,
         "counts": {"shoe": n_pos, "not_shoe": n_neg, "train": len(train_items), "val": len(val_items)},
+        "class_weights_balanced": {str(k): round(v, 6) for k, v in class_weights.items()},
         "val_metrics_default_threshold": m_def,
         "val_metrics_best_f1_threshold": m_best,
         "suggested_config": {
@@ -380,10 +430,17 @@ def main() -> None:
             "shoe_binary.threshold": round(float(thr_best), 2),
             "shoe_binary.input_size": args.size,
         },
+        "validation_notes": (
+            "Review val_metrics_best_f1_threshold for FP (not_shoe→shoe) vs FN (shoe→not_shoe); "
+            "add failure cases back into datasets and retrain."
+        ),
     }
     metrics_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Wrote {metrics_path}")
-    print("\nEnable on Pi: set shoe_binary.enabled: true in config.yaml (use suggested threshold from JSON).")
+    print(
+        "\nEnable on Pi: copy suggested_config from JSON into config.yaml — especially "
+        "shoe_binary.threshold and shoe_binary.input_size (must match training)."
+    )
 
 
 if __name__ == "__main__":

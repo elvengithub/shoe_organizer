@@ -11,9 +11,11 @@ from .sensors import CompartmentSensors
 from .stepper_3axis import ThreeAxisCartesian
 from .esp32_telemetry import apply_to_climate_snapshot
 from .serial_bridge import SerialBridge
+from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name
+from .shoe_type_smoothing import ShoeTypeSmoother
 from .text_presence import analyze_presented_text
-from .vision_service import WebcamCapture
-from .wash_decision import WashPlan
+from .vision_service import ShoeCategory, VisionResult, WebcamCapture
+from .wash_decision import WashPlan, decide_wash, wash_ui_label
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ class ShoeOrganizerOrchestrator:
         self.sensors = CompartmentSensors(self.cfg, self.gpio)
         self.cam = CameraMux(self.cfg, WebcamCapture(self.cfg))
         self._classification_stability = ClassificationStability(self.cfg)
+        st_cfg = self.cfg.get("shoe_type_smoothing") or {}
+        self._type_smoother = ShoeTypeSmoother(int(st_cfg.get("window", 5)))
         self._serial_bridge = SerialBridge(self.cfg)
         self._serial_bridge.start()
 
@@ -287,10 +291,39 @@ class ShoeOrganizerOrchestrator:
         detail["stabilizing"] = stabilizing
 
         if not raw:
+            self._type_smoother.clear()
             return {"ok": True, "error": "not_shoe", **detail}
         if detail.get("catalog_match") is False:
+            self._type_smoother.clear()
             return {"ok": True, "error": "no_catalog_match", **detail}
         if stabilizing and raw:
             d2 = {**detail, "error": "stabilizing", "message": STABILIZING_MESSAGE}
+            d2["shoe_category_raw"] = detail.get("shoe_category")
+            d2["shoe_category"] = None
+            d2["shoe_type_label"] = None
+            d2["shoe_type_short"] = None
+            d2["wash_mode"] = None
+            d2["wash_label"] = None
+            d2["wash_reason"] = None
+            d2["object_classification"] = None
             return {"ok": True, **d2}
+        raw_cat = str(detail.get("shoe_category") or "casual")
+        smooth_cat = self._type_smoother.update(raw_cat)
+        detail["shoe_category_raw"] = raw_cat
+        detail["shoe_category"] = smooth_cat
+        vis = VisionResult(dirt_score=float(detail["dirt_score"]), category=ShoeCategory.CASUAL)
+        wplan = decide_wash(vis, smooth_cat)
+        detail["wash_mode"] = wplan.mode
+        detail["wash_label"] = wash_ui_label(wplan.mode, smooth_cat)
+        detail["wash_reason"] = wplan.reason
+        ts = SHOE_TYPE_LABELS[smooth_cat]
+        detail["shoe_type_short"] = ts
+        detail["shoe_type_label"] = format_shoe_display_name(
+            smooth_cat, ts, detail.get("catalog_category"), detail.get("catalog_style")
+        )
+        detail["object_classification"] = f"shoe_{smooth_cat}"
+        scores = detail.get("shoe_type_dataset_scores")
+        if isinstance(scores, dict) and smooth_cat in scores:
+            v = scores[smooth_cat]
+            detail["shoe_type_dataset_score"] = round(float(v), 4) if float(v) >= 0.0 else None
         return {"ok": True, "error": None, **detail}

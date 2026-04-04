@@ -133,18 +133,9 @@ def match_shoe_type_from_dataset(
     hc = _hist_cfg(cfg)
     q_h, q_g, q_l = _compute_hists(bgr, hc)
 
-    scores_by_type: dict[str, float] = {}
-    for tkey in sorted(_ALLOWED_TYPES):
-        refs = galleries.get(tkey) or []
-        if not refs:
-            scores_by_type[tkey] = -1.0
-            continue
-        best = -1.0
-        for rh, rg, rl in refs:
-            s = _hist_score(q_h, q_g, q_l, rh, rg, rl, hc)
-            if s > best:
-                best = s
-        scores_by_type[tkey] = best
+    scores_by_type = compute_type_histogram_scores(
+        q_h, q_g, q_l, galleries, hc, block
+    )
 
     # Only consider types that have at least one reference
     candidates = {k: v for k, v in scores_by_type.items() if v >= 0}
@@ -164,3 +155,47 @@ def match_shoe_type_from_dataset(
             return ShoeTypeDatasetMatch(False, None, float(win_score), scores_by_type)
 
     return ShoeTypeDatasetMatch(True, winner, float(win_score), scores_by_type)
+
+
+def compute_type_histogram_scores(
+    q_h: np.ndarray,
+    q_g: np.ndarray,
+    q_l: np.ndarray,
+    galleries: dict[str, list[tuple[np.ndarray, np.ndarray, np.ndarray]]],
+    hc: dict,
+    block: dict,
+) -> dict[str, float]:
+    """
+    Best mean-of-top-k histogram similarity per type (reduces one bad reference dominating).
+    Types with no images get score -1.0.
+    """
+    top_k = max(1, int(block.get("top_k_refs", 2)))
+    scores_by_type: dict[str, float] = {}
+    for tkey in sorted(_ALLOWED_TYPES):
+        refs = galleries.get(tkey) or []
+        if not refs:
+            scores_by_type[tkey] = -1.0
+            continue
+        per_ref: list[float] = []
+        for rh, rg, rl in refs:
+            per_ref.append(_hist_score(q_h, q_g, q_l, rh, rg, rl, hc))
+        per_ref.sort(reverse=True)
+        k = min(top_k, len(per_ref))
+        scores_by_type[tkey] = float(sum(per_ref[:k]) / k)
+    return scores_by_type
+
+
+def compute_type_histogram_scores_from_bgr(
+    bgr: np.ndarray,
+    cfg: dict,
+    *,
+    already_preprocessed: bool = False,
+) -> dict[str, float]:
+    """Raw histogram scores per type (for fusion); -1 if folder empty."""
+    if not already_preprocessed:
+        bgr = apply_vision_preprocess(bgr, cfg)
+    galleries = _load_type_galleries(cfg)
+    hc = _hist_cfg(cfg)
+    block = cfg.get("shoe_type_dataset", {})
+    q_h, q_g, q_l = _compute_hists(bgr, hc)
+    return compute_type_histogram_scores(q_h, q_g, q_l, galleries, hc, block)

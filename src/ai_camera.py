@@ -13,8 +13,8 @@ import numpy as np
 from .config_loader import load_config
 from .shoe_catalog import match_against_catalog
 from .shoe_decision import raw_shoe_acceptance
-from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name, resolve_shoe_type
-from .shoe_type_dataset import match_shoe_type_from_dataset
+from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name
+from .shoe_type_classifier import classification_to_api_dict, classify_shoe_type
 from .vision_preprocess import apply_vision_preprocess
 from .vision_service import VisionResult, analyze_frame, encode_jpeg
 from .wash_decision import WashPlan, decide_wash, wash_ui_label
@@ -156,14 +156,10 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
         return None, None, _detail_no_catalog(cm.score, gate_reason)
 
     vision = analyze_frame(bgr)
-    td = match_shoe_type_from_dataset(bgr, cfg, already_preprocessed=True)
-    if td.matched and td.shoe_type:
-        shoe_type = td.shoe_type
-        type_short = SHOE_TYPE_LABELS[shoe_type]
-        type_backend = "opencv_type_dataset"
-    else:
-        shoe_type, type_short = resolve_shoe_type(cm.category, cm.style, vision)
-        type_backend = "opencv_catalog_histogram"
+    tcls = classify_shoe_type(bgr, cfg, vision, cm.category, cm.style)
+    shoe_type = tcls.shoe_type
+    type_short = SHOE_TYPE_LABELS[shoe_type]
+    type_backend = tcls.backend
     wash = decide_wash(vision, shoe_type)
     shoe_type_label = format_shoe_display_name(
         shoe_type, type_short, cm.category, cm.style
@@ -190,9 +186,16 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
         "catalog_category": cm.category,
         "catalog_style": cm.style,
         "catalog_score": round(float(cm.score), 4),
-        "shoe_type_dataset_matched": td.matched,
-        "shoe_type_dataset_score": round(float(td.score), 4) if td.matched else None,
-        "shoe_type_dataset_scores": {k: round(float(v), 4) for k, v in td.scores_by_type.items()},
+        **classification_to_api_dict(tcls),
+        "shoe_type_dataset_matched": any(v >= 0.0 for v in tcls.hist_scores.values()),
+        "shoe_type_dataset_score": (
+            round(float(tcls.hist_scores[shoe_type]), 4)
+            if tcls.hist_scores.get(shoe_type, -1.0) >= 0.0
+            else None
+        ),
+        "shoe_type_dataset_scores": {
+            k: round(float(v), 4) for k, v in tcls.hist_scores.items()
+        },
     }
     if "tflite_p_shoe" in dbg:
         detail["tflite_p_shoe"] = dbg["tflite_p_shoe"]

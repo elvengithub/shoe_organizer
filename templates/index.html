@@ -169,7 +169,7 @@
         }
         if (j.error === "stabilizing") {
           overlayEl.classList.add("ai-stabilizing");
-          shoeEl.textContent = j.shoe_type_label || j.shoe_category || "—";
+          shoeEl.textContent = j.shoe_type_label || j.shoe_category || "Confirming shoe…";
           washEl.textContent = j.wash_label || j.wash_mode || "—";
           reasonEl.textContent = j.message || "Hold steady…";
           const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";

@@ -31,6 +31,8 @@ def resolve_shoe_type(
                 "sneaker",
                 "trainer",
                 "running",
+                "runner",
+                "runners",
                 "sport",
                 "athletic",
                 "basketball",
