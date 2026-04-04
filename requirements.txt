@@ -1,0 +1,2 @@
+# Installs dependencies from the real project folder (nested shoe_organizer).
+-r shoe_organizer/requirements.txt
