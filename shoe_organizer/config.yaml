@@ -1,0 +1,257 @@
+# Pin map — BCM numbering. Adjust to your wiring.
+# Steppers: STEP, DIR, ENABLE (optional tie ENABLE low on driver if unused)
+steppers:
+  x: { step: 17, dir: 27, enable: 22 }   # GT2 belt axis (horizontal pick)
+  y: { step: 23, dir: 24, enable: 25 }   # GT2 belt axis (along slots)
+  z: { step: 5, dir: 6, enable: 13 }     # T8 lead screw (vertical / in-out)
+
+# Motion — tune after mechanical build
+motion:
+  # T8×8 single-start: 8 mm travel per revolution. NEMA 17 200 steps/rev @ 1/16 microstep
+  z_mm_per_rev: 8.0
+  z_steps_per_rev: 3200
+  # GT2 belt: steps per mm = (steps_per_rev * microsteps) / (2 * pitch_mm * pulley_teeth)
+  gt2_pitch_mm: 2.0
+  pulley_teeth: 20
+  motor_steps_per_rev: 200
+  microsteps: 16
+  max_feed_mm_s: 80
+  z_max_feed_mm_s: 15
+
+# Soft limit positions (mm from home); set after homing routine
+limits:
+  x_max: 300
+  y_max: 240
+  z_max: 120
+  # Y centers for storage slots, same order as compartments.storage_ids (2→6). Slot 1 = cleaning bay only.
+  compartment_y_mm: [35, 72, 109, 146, 183]
+
+# Six compartments: 1 = main cleaning bay (wash / camera / mech). 2–6 = storage (env + vent + switch).
+compartments:
+  main_id: 1
+  storage_ids: [2, 3, 4, 5, 6]
+  occupancy_gpio: { 2: 16, 3: 19, 4: 26, 5: 4, 6: 14 }  # LOW = occupied — reassign BCM if pins clash with steppers
+  vent_gpio: { 2: 20, 3: 21, 4: 12, 5: 15, 6: 18 }
+  # Occupancy: instructor toggle — closed = occupied (GPIO LOW with pull-up)
+  # DHT: optional; leave empty {} to use mock values on Pi until wired
+  dht_gpio: { 2: 7, 3: 8, 4: 11, 5: 9, 6: 10 }
+  # Optional Blinka names for real DHT22 (see Adafruit Pi pinout). If omitted, mock T/RH.
+  dht_board_pin: { 2: "D7", 3: "D8", 4: "D11", 5: "D9", 6: "D10" }
+
+# Camera: USB on Flask host and/or JPEG from ESP32 (MicroPython) — see README
+# source: usb | esp32 | prefer_esp32  (prefer_esp32 uses ESP frame when fresh, else USB)
+camera:
+  source: usb
+  index: 0
+  width: 640
+  height: 480
+  esp32_frame_ttl_seconds: 3.0
+
+# Optional: crop + CLAHE before gate, catalog, and dirt heuristics (same as reference images).
+# roi: fractions of frame width/height (0–1). Omit or set null to use full frame.
+# Fractions of frame (0–1). Default ≈ centered shoe ~65% wide, slightly low in frame (typical bay camera).
+# Set roi: null to disable cropping. Tweak x/y/w/h after you see the live view in the kiosk.
+vision_preprocess:
+  roi: { x: 0.15, y: 0.22, w: 0.70, h: 0.58 }
+  clahe_enabled: true
+  clahe_clip: 2.0
+  clahe_tile: 8
+
+# OpenCV shoe silhouette gate (server-side). Tune if real booth lighting differs.
+shoe_gate:
+  enabled: true
+  min_contour_area_ratio: 0.025
+  max_contour_area_ratio: 0.92
+  min_aspect_ratio: 1.1
+  max_aspect_ratio: 7.5
+  min_solidity: 0.32
+
+# Block faces / skin-dominated frames from being classified as shoes (same UI: "Not a shoe.").
+anti_face:
+  enabled: true
+  use_haar_frontal: true
+  use_haar_profile: true
+  haar_scale: 1.08
+  haar_min_neighbors: 5
+  haar_min_size: 28
+  min_face_area_ratio: 0.015
+  use_skin_pixel_ratio: true
+  skin_ratio_reject: 0.52
+  ycrcb_cr_min: 135
+  ycrcb_cr_max: 180
+  ycrcb_cb_min: 85
+  ycrcb_cb_max: 135
+
+# presenter.mode: camera — bay camera sees what is present; classification scope is shoes only
+#   (non-shoes → "Not a shoe."). Live stream + /api/camera/analyze.
+# presenter.mode: text — optional intake from POST /api/analyze description only (no camera).
+presenter:
+  mode: camera
+
+# Optional overrides for text-only classification (keyword lists merged with built-ins).
+text_classifier:
+  default_dirt_score: 0.18
+  # not_shoe_keywords: []
+  # shoe_keywords: []
+
+# ESP32 (MicroPython) environmental telemetry.
+# serial.port: "auto" scans for CH340/CP210x; or set "COM6", "/dev/ttyUSB0" etc.
+# compartment_id: legacy single-zone USB firmware only — which slot gets flat JSON if no "compartments" key.
+# Wi-Fi multi-zone: POST {"compartments": {"2": {...}, "3": {...}}} — flash micropython/main.py (Thonny)
+# secret: optional; set same string on ESP32 as header X-ESP32-Secret if non-empty.
+esp32_telemetry:
+  enabled: true
+  compartment_id: 2
+  secret: ""
+  max_age_seconds: 8.0
+  use_ultrasonic_occupancy: true
+  serial:
+    port: auto
+    baud: 115200
+
+# Flask (touch LCD shows this in Chromium kiosk)
+server:
+  host: 0.0.0.0
+  port: 8080
+
+# Decision thresholds (tune with real images)
+vision:
+  dirt_edge_threshold: 0.12
+  # Three-way type from camera (casual / sports / leather)
+  leather_saturation_max: 52
+  leather_edge_max: 0.092
+  leather_gradient_max: 0.086
+  # Dark leather + white sole: edges look “busy” but saturation stays low — treat as leather
+  leather_muted_saturation_max: 66
+  leather_min_edge_when_muted: 0.042
+  # Navy/leather can look “saturated” in HSV-S; dark upper = low mean V (0–255)
+  leather_brightness_v_max: 108
+  sports_edge_min: 0.072
+  sports_gradient_min: 0.09
+  # Mean Sobel gradient — raise so brogue/stitch on leather stays below “mesh”
+  sports_mesh_gradient_min: 0.140
+  # Knit path also needs strong gradient OR saturation (gradient alone is not enough)
+  sports_mesh_strong_gradient_min: 0.138
+  sports_mesh_min_saturation: 36
+  # Colorful trainer — tighter than before so tan/brown leather isn’t “color sports”
+  sports_edge_color_min_gradient: 0.126
+  sports_edges_require_saturation_min: 60
+  # Smooth leather / rubber upper: gradient below this and not mesh → leather
+  leather_safe_gradient_max: 0.132
+  # Micro-texture RMS: dark/smooth leather < leather_max; sole seam < leather_sole_max; casual weave >= casual_min
+  leather_max_texture_rms: 0.072
+  leather_sole_max_texture_rms: 0.10
+  casual_texture_rms_min: 0.048
+  sports_bright_saturation_min: 70
+  sports_bright_edge_min: 0.05
+  # Bright smooth low-sat upper (white PU / canvas dress sneaker) → casual, not leather
+  casual_synthetic_brightness_v_min: 150
+  casual_synthetic_saturation_max: 58
+  casual_synthetic_texture_rms_max: 0.062
+  casual_synthetic_gradient_max: 0.125
+  # Pebbled / tumbled leather (navy loafers, etc.): high texture — not mesh trainers
+  leather_pebble_texture_rms_min: 0.048
+  leather_pebble_texture_rms_max: 0.175
+  leather_pebble_brightness_v_max: 148
+  leather_pebble_saturation_max: 64
+  # When “sports” would win but scene is muted/smooth/dark (dress or leather) — use casual, not sports
+  sports_obvious_color_sat_min: 64
+  sports_obvious_mesh_grad_min: 0.144
+  sports_obvious_mesh_sat_min: 42
+  dress_ambiguous_max_texture_rms: 0.102
+  dress_ambiguous_brightness_v_max: 132
+  # Gray knit: very high gradient + low saturation (above leather grain, below old loose OR-sat rule)
+  sports_mesh_low_sat_gradient_min: 0.148
+  sports_mesh_low_sat_min: 18
+
+wash:
+  hard_if_dirt_above: 0.35
+  sports_hard_if_dirt_above: 0.22
+  casual_hard_if_dirt_above: 0.28
+
+# Three-way type ID: put reference photos under datasets/shoe_types/{sports,casual,leather}/
+# Same preprocess + histograms as shoe_catalog. If a type wins above min_match_score (and margin),
+# that type is used; otherwise fall back to catalog + vision heuristics.
+shoe_type_dataset:
+  enabled: true
+  path: datasets/shoe_types
+  # Legacy single-signal gate (used when fusion.enabled is false)
+  min_match_score: 0.32
+  min_margin: 0.015
+  # Mean of best K histogram matches per type (stabler than a single outlier ref)
+  top_k_refs: 2
+  fusion:
+    enabled: true
+    # Vision weighted slightly higher — frame cues beat noisy histograms when refs are sparse
+    weight_histogram: 0.36
+    weight_vision: 0.49
+    weight_catalog: 0.15
+    boost_when_vision_sports: true
+    extra_vision_weight_when_sports: 0.08
+    sports_logit_boost: 0.12
+    boost_when_vision_leather: true
+    extra_vision_weight_when_leather: 0.14
+    leather_logit_boost: 0.24
+    boost_when_vision_casual: true
+    extra_vision_weight_when_casual: 0.12
+    casual_logit_boost: 0.2
+    # Reduce histogram-driven “sports” when OpenCV already says casual or leather
+    penalize_sports_when_vision_casual: 0.12
+    penalize_sports_when_vision_leather: 0.1
+    temperature: 0.5
+    # If fused confidence is below this, fall back to catalog+vision only (0 = disabled)
+    min_confidence: 0.0
+
+# Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)
+# Histogram fusion: HSV 2D + gray + LAB a–b (after same preprocess as live frame).
+# Raise min_match_score if wrong styles win; lower slightly if nothing ever matches.
+shoe_catalog:
+  enabled: true
+  path: datasets/shoes
+  min_match_score: 0.36
+  resize: 160
+  hist_h_bins: 24
+  hist_s_bins: 24
+  hist_gray_bins: 32
+  hist_lab_bins: 16
+  weight_hsv: 0.48
+  weight_gray: 0.22
+  weight_lab: 0.30
+  blend_bhattacharyya: false
+  bhattacharyya_mix: 0.25
+
+# Phase 1: non-shoe reference images (same ROI/CLAHE as live). Empty folder = no extra rejections.
+not_shoe_catalog:
+  enabled: true
+  path: datasets/not_shoe
+  min_score_to_reject: 0.45
+
+# Phase 2: binary shoe classifier (TFLite). Train on PC: pip install -r scripts/requirements-train.txt
+#   python scripts/train_shoe_binary.py --align_preprocess
+#   After training, set shoe_binary.threshold and shoe_binary.input_size from models/shoe_binary_metrics.json
+#   suggested_config (do not use a fixed 0.55 without checking metrics).
+# Eval: python scripts/eval_shoe_binary.py --threshold <value from metrics JSON>
+shoe_binary:
+  enabled: false
+  model_path: models/shoe_binary.tflite
+  threshold: 0.55
+  input_size: 224
+  strict: false
+  skip_negative_gallery_after_binary: true
+
+# Phase 1: require consecutive frames before trusting "shoe" (intake + confirmed_is_shoe in /api/camera/analyze).
+# Rolling majority vote on sports | leather | casual (reduces label flicker)
+shoe_type_smoothing:
+  window: 5
+
+classification_stability:
+  enabled: true
+  shoe_confirm_frames: 2
+  not_shoe_confirm_frames: 2
+
+# Phase 3: save preprocessed ROI when rejected as not-shoe (for dataset mining). Off by default.
+debug_capture:
+  enabled: false
+  save_rejects: true
+  path: datasets/captured_rejects
+  jpeg_quality: 82

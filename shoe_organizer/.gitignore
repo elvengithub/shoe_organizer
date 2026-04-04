@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+datasets/captured_rejects/*.jpg
+datasets/captured_rejects/*.jpeg
+models/*.tflite

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Shoe organizer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>Shoe organizer</h1>
+    <p class="sub">Compartment 1 — cleaning bay · 2–6 — storage</p>
+  </header>
+
+  <main>
+    <section class="camera-panel" aria-label="Main bay camera preview">
+      <h2 class="camera-title">Cleaning bay (compartment 1)</h2>
+      <p class="camera-sub">
+        Shoes are identified and washed here. The camera shows this bay. Classification is <strong>shoe-only</strong>
+        (type, catalog match, wash). Accepted shoes are routed to free storage in compartments 2–6.
+      </p>
+      <div class="bay-layout">
+        <div class="camera-frame">
+          <img
+            id="cam-stream"
+            src="{{ url_for('camera_stream') }}"
+            width="640"
+            height="480"
+            alt="Live camera preview of the main bay"
+          />
+          <div id="ai-overlay" class="ai-overlay" role="status" aria-live="polite">
+            <div class="ai-overlay-row">
+              <div class="ai-chip shoe">
+                <span class="ai-chip-k">Shoe scope</span>
+                <span id="ai-shoe" class="ai-chip-v">…</span>
+              </div>
+              <div id="ai-wash-chip" class="ai-chip wash wash-soft">
+                <span class="ai-chip-k">Wash</span>
+                <span id="ai-wash" class="ai-chip-v">…</span>
+              </div>
+            </div>
+            <p id="ai-reason" class="ai-reason"></p>
+            <p id="ai-dirt" class="ai-dirt"></p>
+          </div>
+        </div>
+        <section class="grid" id="status-grid" aria-label="Storage slots 2 through 6"></section>
+      </div>
+    </section>
+
+    <p id="flow-status" class="flow-status" aria-live="polite"></p>
+
+    <p class="hint">Kiosk: open Chromium fullscreen to this page on the Pi touch LCD.</p>
+  </main>
+
+  <script>
+    const flowStatusEl = document.getElementById("flow-status");
+    const gridEl = document.getElementById("status-grid");
+    const washChipEl = document.getElementById("ai-wash-chip");
+    const overlayEl = document.getElementById("ai-overlay");
+
+    let stableFrames = 0;
+    let lastIntakeAt = 0;
+    const STABLE_NEED = 3;
+    const INTAKE_COOLDOWN_MS = 22000;
+
+    async function runIntakeQuiet() {
+      try {
+        const r = await fetch("/api/intake", { method: "POST" });
+        const j = await r.json();
+        flowStatusEl.classList.remove("flow-err");
+        if (j.ok === false && j.error === "analysis_failed") {
+          flowStatusEl.classList.add("flow-err");
+          flowStatusEl.textContent = j.message || "Could not analyze image.";
+          return;
+        }
+        if (j.ok === false && j.error === "camera_unavailable") {
+          flowStatusEl.textContent = "";
+          return;
+        }
+        if (j.ok === false && j.error === "empty_description") {
+          flowStatusEl.textContent = j.message || "";
+          return;
+        }
+        if (j.error === "not_shoe" || j.error === "no_catalog_match" || j.error === "stabilizing") {
+          flowStatusEl.textContent = "";
+          return;
+        }
+        if (j.ok && !j.error && j.compartment != null) {
+          const label = j.shoe_type_label || j.shoe_category || "Shoe";
+          flowStatusEl.textContent = `${label} → slot ${j.compartment} · ${j.wash_label || j.wash_mode || ""}`;
+        } else if (j.message) {
+          flowStatusEl.textContent = j.message;
+        }
+        refreshStatus();
+      } catch {
+        flowStatusEl.textContent = "";
+      }
+    }
+
+    function maybeAutoIntake(j) {
+      const ready =
+        j.ok !== false &&
+        j.error == null &&
+        j.confirmed_is_shoe === true &&
+        j.catalog_match === true &&
+        j.is_shoe !== false;
+      if (ready) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+      }
+      if (stableFrames < STABLE_NEED) return;
+      if (Date.now() - lastIntakeAt < INTAKE_COOLDOWN_MS) return;
+      stableFrames = 0;
+      lastIntakeAt = Date.now();
+      void runIntakeQuiet();
+    }
+
+    async function refreshAiCamera() {
+      const shoeEl = document.getElementById("ai-shoe");
+      const washEl = document.getElementById("ai-wash");
+      const reasonEl = document.getElementById("ai-reason");
+      const dirtEl = document.getElementById("ai-dirt");
+      let j = {};
+      try {
+        const r = await fetch("/api/camera/analyze");
+        j = await r.json();
+        overlayEl.classList.remove("ai-not-shoe", "ai-no-frame", "ai-no-catalog", "ai-stabilizing");
+        if (!j.ok) {
+          overlayEl.classList.add("ai-no-frame");
+          if (j.error === "analysis_failed") {
+            shoeEl.textContent = "Analysis error";
+            washEl.textContent = "—";
+            reasonEl.textContent = j.message || "Could not analyze image.";
+            dirtEl.textContent = j.reject_detail || j.classification_error || "";
+          } else {
+            shoeEl.textContent = "No frame";
+            washEl.textContent = "—";
+            reasonEl.textContent = j.message || "Camera unavailable";
+            dirtEl.textContent = "";
+          }
+          washChipEl.classList.remove("wash-hard", "wash-soft");
+          washChipEl.classList.add("wash-soft");
+          maybeAutoIntake(j);
+          return;
+        }
+        if (j.error === "not_shoe" || j.is_shoe === false) {
+          overlayEl.classList.add("ai-not-shoe");
+          shoeEl.textContent = j.message || "Not a shoe.";
+          washEl.textContent = "—";
+          reasonEl.textContent = [j.reject_detail, j.classification_error].filter(Boolean).join(" · ") || "";
+          dirtEl.textContent = "";
+          washChipEl.classList.remove("wash-hard", "wash-soft");
+          washChipEl.classList.add("wash-soft");
+          maybeAutoIntake(j);
+          return;
+        }
+        if (j.error === "no_catalog_match" || j.catalog_match === false) {
+          overlayEl.classList.add("ai-no-catalog");
+          shoeEl.textContent = j.message || "(No matching shoe in catalog.)";
+          washEl.textContent = "—";
+          reasonEl.textContent =
+            j.catalog_score != null ? `Best catalog score: ${Number(j.catalog_score).toFixed(2)} (below threshold)` : "";
+          dirtEl.textContent = j.reject_detail ? String(j.reject_detail) : "";
+          washChipEl.classList.remove("wash-hard", "wash-soft");
+          washChipEl.classList.add("wash-soft");
+          maybeAutoIntake(j);
+          return;
+        }
+        if (j.error === "stabilizing") {
+          overlayEl.classList.add("ai-stabilizing");
+          shoeEl.textContent = j.shoe_type_label || j.shoe_category || "Confirming shoe…";
+          washEl.textContent = j.wash_label || j.wash_mode || "—";
+          reasonEl.textContent = j.message || "Hold steady…";
+          const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
+          dirtEl.textContent =
+            j.dirt_score != null
+              ? `${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
+              : cat || "";
+          washChipEl.classList.remove("wash-hard", "wash-soft");
+          washChipEl.classList.add(j.wash_mode === "hard" ? "wash-hard" : "wash-soft");
+          maybeAutoIntake(j);
+          return;
+        }
+        shoeEl.textContent = j.shoe_type_label || j.shoe_category || "—";
+        washEl.textContent = j.wash_label || j.wash_mode || "—";
+        reasonEl.textContent = j.wash_reason ? String(j.wash_reason) : "";
+        const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
+        dirtEl.textContent =
+          j.dirt_score != null
+            ? `${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
+            : cat || "";
+        washChipEl.classList.remove("wash-hard", "wash-soft");
+        washChipEl.classList.add(j.wash_mode === "hard" ? "wash-hard" : "wash-soft");
+        maybeAutoIntake(j);
+      } catch (e) {
+        overlayEl.classList.remove("ai-not-shoe", "ai-no-catalog", "ai-stabilizing");
+        overlayEl.classList.add("ai-no-frame");
+        shoeEl.textContent = "—";
+        washEl.textContent = "—";
+        reasonEl.textContent = "Could not reach camera analyze API";
+        dirtEl.textContent = String(e);
+        maybeAutoIntake({});
+      }
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function refreshStatus() {
+      const r = await fetch("/api/status");
+      const data = await r.json();
+      gridEl.innerHTML = "";
+      for (const [id, row] of Object.entries(data)) {
+        const card = document.createElement("div");
+        card.className = "card";
+        const esp =
+          row.esp32_online === true
+            ? `<p class="esp32-live">ESP32 · ${row.esp32_age_seconds != null ? esc(String(row.esp32_age_seconds)) + "s ago" : "live"}</p>`
+            : row.esp32_online === false
+              ? `<p class="esp32-off">ESP32 offline</p>`
+              : "";
+        const cap =
+          row.ultrasonic_max_cm != null && row.ultrasonic_max_cm !== undefined
+            ? esc(String(row.ultrasonic_max_cm))
+            : "75";
+        let dist = "";
+        if (row.distance_cm != null && row.distance_cm !== undefined) {
+          dist = `<p>Ultrasonic: ${esc(String(row.distance_cm))} cm <span class="ultra-hint">(in bay)</span></p>`;
+        } else if (row.esp32_online === true && row.ultrasonic_clear === true) {
+          dist = `<p class="ultra-clear">Ultrasonic: clear — nothing within ${cap} cm of sensor</p>`;
+        }
+        const odor =
+          row.odor_level_pct != null && row.odor_level_pct !== undefined
+            ? `<p>Odor index: ${esc(String(row.odor_level_pct))}%</p>`
+            : "";
+        const risk = row.risk_level ? `<p class="risk-line">Risk: ${esc(String(row.risk_level))}</p>` : "";
+        const bio = row.bio_message ? `<p class="bio-line">${esc(String(row.bio_message))}</p>` : "";
+        card.innerHTML = `
+          <h2>Slot ${id}</h2>
+          ${esp}
+          <p>T: ${row.temperature_c ?? "—"} °C</p>
+          <p>RH: ${row.humidity_pct ?? "—"} %</p>
+          ${dist}${odor}${risk}${bio}
+          <p class="${row.occupied ? "occ" : "free"}">${row.occupied ? "Occupied" : "Free"}</p>
+          <label class="vent"><input type="checkbox" data-cid="${id}" ${row.vent_on ? "checked" : ""} /> Vent</label>
+        `;
+        gridEl.appendChild(card);
+      }
+      gridEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+        cb.addEventListener("change", async () => {
+          const cid = parseInt(cb.dataset.cid, 10);
+          await fetch("/api/vent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ compartment: cid, on: cb.checked }),
+          });
+        });
+      });
+    }
+
+    refreshStatus();
+    setInterval(refreshStatus, 8000);
+    refreshAiCamera();
+    setInterval(refreshAiCamera, 1100);
+  </script>
+</body>
+</html>
