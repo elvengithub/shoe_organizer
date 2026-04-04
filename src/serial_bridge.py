@@ -12,8 +12,11 @@ import logging
 import threading
 import time
 
-import serial
-import serial.tools.list_ports
+try:
+    import serial
+    import serial.tools.list_ports
+except ImportError:
+    serial = None  # type: ignore[assignment, misc]
 
 from .esp32_telemetry import update_from_body
 
@@ -23,6 +26,8 @@ _ESP32_USB_KEYWORDS = ("ch340", "cp210", "esp32", "usb-serial", "silicon labs")
 
 
 def _auto_detect_port() -> str | None:
+    if serial is None:
+        return None
     for p in serial.tools.list_ports.comports():
         desc = (p.description or "").lower()
         if any(k in desc for k in _ESP32_USB_KEYWORDS):
@@ -43,6 +48,12 @@ class SerialBridge:
     def start(self) -> None:
         if not self._enabled:
             log.info("esp32_telemetry disabled — serial bridge not started")
+            return
+        if serial is None:
+            log.warning(
+                "esp32_telemetry is enabled but pyserial is not installed — "
+                "serial bridge skipped. Run: pip install pyserial"
+            )
             return
         if self._port == "auto":
             detected = _auto_detect_port()
@@ -65,6 +76,7 @@ class SerialBridge:
             self._thread.join(timeout=3)
 
     def _run(self) -> None:
+        assert serial is not None
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -80,6 +92,7 @@ class SerialBridge:
                 backoff = min(backoff * 2, 15.0)
 
     def _read_loop(self) -> None:
+        assert serial is not None
         log.info("opening serial %s @ %d baud", self._port, self._baud)
         with serial.Serial(self._port, self._baud, timeout=2) as ser:
             backoff = 1.0

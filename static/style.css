@@ -45,8 +45,17 @@ header h1 {
   margin: 0 0 0.65rem;
   font-size: 0.95rem;
   color: var(--muted);
-  max-width: 640px;
+  max-width: 72rem;
   line-height: 1.4;
+}
+
+/* Camera preview (640x480) and storage slots 2-6 side by side */
+.bay-layout {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap; /* keep slots on same row as camera */
+  align-items: flex-start; /* camera-frame sets vertical reference from #cam-stream */
+  gap: 1rem;
 }
 
 .present-panel {
@@ -117,6 +126,8 @@ header h1 {
 
 .camera-frame {
   position: relative;
+  flex: 0 0 auto;
+  width: fit-content;
   max-width: 100%;
   border-radius: 14px;
   overflow: hidden;
@@ -249,8 +260,8 @@ header h1 {
 
 .camera-frame img {
   display: block;
-  width: 100%;
-  max-width: 640px;
+  width: 640px;
+  max-width: 100%;
   height: auto;
   aspect-ratio: 4 / 3;
   object-fit: contain;
@@ -261,7 +272,7 @@ header h1 {
   min-height: 1.25rem;
   font-size: 0.88rem;
   color: var(--muted);
-  max-width: 640px;
+  max-width: 72rem;
   line-height: 1.4;
 }
 
@@ -274,6 +285,71 @@ header h1 {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1rem;
   margin-top: 1rem;
+}
+
+/* Slots 2-6 beside camera: 2 / 3 stacked, 4 / 5 stacked, 6 top-right (API order 2,3,4,5,6) */
+/* Same vertical span as #cam-stream (4:3 at 640px wide => 480px tall) */
+.bay-layout .grid {
+  flex: 1 1 0; /* fill remaining space, not fixed 20rem */
+  min-width: 0;
+  margin-top: 0;
+  min-height: 480px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: 1fr 1fr;
+  gap: 0.75rem;
+  align-content: stretch;
+}
+
+.bay-layout .grid > .card {
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+}
+
+.bay-layout .grid > .card:nth-child(1) {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.bay-layout .grid > .card:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.bay-layout .grid > .card:nth-child(3) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.bay-layout .grid > .card:nth-child(4) {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.bay-layout .grid > .card:nth-child(5) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+@media (max-width: 1100px) {
+  .bay-layout {
+    flex-wrap: wrap; /* allow stacking on small screens */
+  }
+  .bay-layout .grid {
+    flex: 1 1 100%;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-rows: none;
+    min-height: unset;
+    align-content: start;
+  }
+  .bay-layout .grid > .card:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .bay-layout .grid > .card {
+    height: auto;
+    min-height: unset;
+  }
 }
 
 .card {

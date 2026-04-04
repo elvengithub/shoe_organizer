@@ -25,10 +25,13 @@ class CycleResult:
     message: str
     dirt_score: float | None = None
     shoe_category: str | None = None
-    outcome: str = "ok"  # ok | no_camera | not_shoe | no_catalog_match | stabilizing | empty_description
+    outcome: str = "ok"  # ok | no_camera | not_shoe | no_catalog_match | stabilizing | empty_description | analysis_failed
     catalog_category: str | None = None
     catalog_style: str | None = None
     catalog_score: float | None = None
+    reject_stage: str | None = None
+    classification_error: str | None = None
+    reject_detail: str | None = None
 
 
 class ShoeOrganizerOrchestrator:
@@ -136,14 +139,29 @@ class ShoeOrganizerOrchestrator:
                 outcome="no_camera",
             )
         vision, wash, det = analyze_shoe_and_wash_from_bgr(frame)
+        if det.get("reject_stage") == "pipeline_error":
+            return CycleResult(
+                WashPlan("soft", "pipeline error"),
+                None,
+                str(det.get("message") or "Analysis failed."),
+                dirt_score=None,
+                shoe_category=None,
+                outcome="analysis_failed",
+                reject_stage="pipeline_error",
+                classification_error=det.get("classification_error"),
+                reject_detail=det.get("reject_detail"),
+            )
         if not det.get("raw_is_shoe", det.get("is_shoe", True)):
             return CycleResult(
                 WashPlan("soft", "not a shoe"),
                 None,
-                NOT_SHOE_MESSAGE,
+                str(det.get("message") or NOT_SHOE_MESSAGE),
                 dirt_score=None,
                 shoe_category=None,
                 outcome="not_shoe",
+                reject_stage=det.get("reject_stage"),
+                classification_error=det.get("classification_error"),
+                reject_detail=det.get("reject_detail"),
             )
         if det.get("raw_is_shoe", True) and not self._classification_stability.confirmed():
             return CycleResult(
@@ -162,6 +180,8 @@ class ShoeOrganizerOrchestrator:
                 dirt_score=None,
                 shoe_category=None,
                 outcome="no_catalog_match",
+                classification_error=det.get("classification_error"),
+                reject_detail=det.get("reject_detail"),
             )
         assert vision is not None and wash is not None
         cc = det.get("catalog_category")
@@ -251,6 +271,16 @@ class ShoeOrganizerOrchestrator:
                 "message": msg,
             }
         _v, _w, detail = analyze_shoe_and_wash_from_bgr(frame)
+        if detail.get("reject_stage") == "pipeline_error":
+            return {
+                "ok": False,
+                "error": "analysis_failed",
+                "message": detail.get("message"),
+                "classification_error": detail.get("classification_error"),
+                "reject_stage": "pipeline_error",
+                "is_shoe": None,
+                "catalog_match": None,
+            }
         raw = bool(detail.get("raw_is_shoe", detail.get("is_shoe", False)))
         confirmed, stabilizing = self._classification_stability.tick(raw)
         detail["confirmed_is_shoe"] = confirmed

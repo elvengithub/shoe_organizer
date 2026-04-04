@@ -129,6 +129,23 @@ def create_app() -> Flask:
                     "shoe_category": None,
                 }
             )
+        if r.outcome == "analysis_failed":
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "analysis_failed",
+                    "is_shoe": None,
+                    "wash_mode": None,
+                    "wash_reason": None,
+                    "compartment": None,
+                    "message": r.message,
+                    "dirt_score": None,
+                    "shoe_category": None,
+                    "reject_stage": r.reject_stage,
+                    "classification_error": r.classification_error,
+                    "reject_detail": r.reject_detail,
+                }
+            )
         if r.outcome == "not_shoe":
             return jsonify(
                 {
@@ -142,6 +159,9 @@ def create_app() -> Flask:
                     "message": r.message,
                     "dirt_score": None,
                     "shoe_category": None,
+                    "reject_stage": r.reject_stage,
+                    "classification_error": r.classification_error,
+                    "reject_detail": r.reject_detail,
                 }
             )
         if r.outcome == "stabilizing":
@@ -172,9 +192,11 @@ def create_app() -> Flask:
                     "message": r.message,
                     "dirt_score": None,
                     "shoe_category": None,
+                    "classification_error": r.classification_error,
+                    "reject_detail": r.reject_detail,
                 }
             )
-        st = r.shoe_category or "unknown"
+        st = r.shoe_category or "casual"
         sl = SHOE_TYPE_LABELS.get(st, st.title())
         extra = {
             "shoe_type_label": format_shoe_display_name(st, sl, r.catalog_category, r.catalog_style),

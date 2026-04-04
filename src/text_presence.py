@@ -63,18 +63,17 @@ def _infer_dirt_score(tokens: list[str], cfg: dict) -> float:
 
 
 def _infer_shoe_type(tokens: list[str]) -> str:
+    """Always one of: casual, sports, leather."""
     ts = " ".join(tokens)
-    if any(h in ts for h in _DRESS_HINTS):
-        return "dress"
     if any(h in ts for h in _SPORTS_HINTS):
         return "sports"
-    if any(h in ts for h in _LEATHER_HINTS):
+    if any(h in ts for h in _LEATHER_HINTS) or any(h in ts for h in _DRESS_HINTS):
         return "leather"
     if any(h in ts for h in _CASUAL_HINTS):
         return "casual"
     if "shoe" in tokens or "shoes" in tokens or "boot" in tokens or "boots" in tokens:
         return "casual"
-    return "unknown"
+    return "casual"
 
 
 def _style_snippet(raw: str, max_len: int = 48) -> str:
@@ -132,7 +131,7 @@ def analyze_presented_text(description: str, cfg: dict | None = None) -> dict[st
 
     shoe_type = _infer_shoe_type(tokens)
     d = _infer_dirt_score(tokens, cfg)
-    vision = VisionResult(dirt_score=d, category=ShoeCategory.UNKNOWN)
+    vision = VisionResult(dirt_score=d, category=ShoeCategory.CASUAL)
     wash = decide_wash(vision, shoe_type)
     sl = SHOE_TYPE_LABELS.get(shoe_type, shoe_type.title())
     style = _style_snippet(raw)

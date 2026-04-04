@@ -115,13 +115,28 @@ server:
 # Decision thresholds (tune with real images)
 vision:
   dirt_edge_threshold: 0.12
-  leather_saturation_max: 45
-  sports_edge_min: 0.08
+  # Three-way type from camera (casual / sports / leather)
+  leather_saturation_max: 52
+  leather_edge_max: 0.092
+  leather_gradient_max: 0.086
+  sports_edge_min: 0.072
+  sports_gradient_min: 0.09
+  sports_bright_saturation_min: 70
+  sports_bright_edge_min: 0.05
 
 wash:
   hard_if_dirt_above: 0.35
   sports_hard_if_dirt_above: 0.22
   casual_hard_if_dirt_above: 0.28
+
+# Three-way type ID: put reference photos under datasets/shoe_types/{sports,casual,leather}/
+# Same preprocess + histograms as shoe_catalog. If a type wins above min_match_score (and margin),
+# that type is used; otherwise fall back to catalog + vision heuristics.
+shoe_type_dataset:
+  enabled: true
+  path: datasets/shoe_types
+  min_match_score: 0.32
+  min_margin: 0.015
 
 # Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)
 # Histogram fusion: HSV 2D + gray + LAB a–b (after same preprocess as live frame).

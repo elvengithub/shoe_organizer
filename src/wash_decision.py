@@ -12,9 +12,9 @@ class WashPlan:
     reason: str
 
 
-def decide_wash(vision: VisionResult, shoe_type: str = "unknown") -> WashPlan:
+def decide_wash(vision: VisionResult, shoe_type: str = "casual") -> WashPlan:
     """
-    shoe_type: dress | leather | sports | casual | unknown
+    shoe_type: casual | sports | leather (three-way).
     Chooses hard vs soft from soil score + material class.
     """
     cfg = load_config()
@@ -22,7 +22,9 @@ def decide_wash(vision: VisionResult, shoe_type: str = "unknown") -> WashPlan:
     hard_thr = float(w.get("hard_if_dirt_above", 0.35))
     sport_push = float(w.get("sports_hard_if_dirt_above", 0.22))
     casual_push = float(w.get("casual_hard_if_dirt_above", 0.28))
-    st = (shoe_type or "unknown").lower()
+    st = (shoe_type or "casual").lower()
+    if st not in ("casual", "sports", "leather"):
+        st = "casual"
     d = float(vision.dirt_score)
 
     if d >= hard_thr:
@@ -31,11 +33,6 @@ def decide_wash(vision: VisionResult, shoe_type: str = "unknown") -> WashPlan:
             f"Heavy soil ({d:.2f}) — deep wash recommended for this {st} shoe",
         )
 
-    if st == "dress":
-        return WashPlan(
-            "soft",
-            "Dress shoe — gentle wash to protect finish and structure",
-        )
     if st == "leather":
         return WashPlan(
             "soft",
@@ -63,12 +60,13 @@ def decide_wash(vision: VisionResult, shoe_type: str = "unknown") -> WashPlan:
         )
     return WashPlan(
         "soft",
-        f"General care — gentle wash (soil {d:.2f})",
+        f"Casual shoe — gentle wash (soil {d:.2f})",
     )
 
 
 def wash_ui_label(mode: str, shoe_type: str) -> str:
-    st = (shoe_type or "unknown").title()
+    labels = {"casual": "Casual", "sports": "Sports", "leather": "Leather"}
+    st = labels.get((shoe_type or "casual").lower(), "Casual")
     if mode == "hard":
         return f"Deep wash ({st})"
     return f"Gentle wash ({st})"

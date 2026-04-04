@@ -14,9 +14,11 @@ log = logging.getLogger(__name__)
 
 
 class ShoeCategory(str, Enum):
+    """Camera-only material/style bucket (three-way; no “unknown”)."""
+
     LEATHER = "leather"
     SPORTS = "sports"
-    UNKNOWN = "unknown"
+    CASUAL = "casual"
 
 
 @dataclass
@@ -92,18 +94,39 @@ def _dirt_score(gray: np.ndarray) -> float:
 
 
 def _category_heuristic(bgr: np.ndarray) -> ShoeCategory:
+    """
+    Three-way split from a single frame: sports (mesh/texture), leather (muted + smooth),
+    casual (everything else). Thresholds live under config `vision`.
+    """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     s = float(np.mean(hsv[:, :, 1]))
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(blur, 50, 150)
     edge_d = float(np.mean(edges > 0))
+    gx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mean = float(np.mean(np.sqrt(gx * gx + gy * gy))) / 255.0
+
     cfg = load_config()
     vm = cfg.get("vision", {})
-    if s < vm.get("leather_saturation_max", 45) and edge_d < vm.get("sports_edge_min", 0.08) + 0.02:
-        return ShoeCategory.LEATHER
-    if edge_d >= vm.get("sports_edge_min", 0.08):
+    ls_max = float(vm.get("leather_saturation_max", 52))
+    le_max = float(vm.get("leather_edge_max", 0.092))
+    lg_max = float(vm.get("leather_gradient_max", 0.086))
+    se_min = float(vm.get("sports_edge_min", 0.072))
+    sg_min = float(vm.get("sports_gradient_min", 0.09))
+    bright_s = float(vm.get("sports_bright_saturation_min", 70))
+    bright_e = float(vm.get("sports_bright_edge_min", 0.05))
+
+    strong_sports = edge_d >= se_min or grad_mean >= sg_min
+    bright_sports = s >= bright_s and edge_d >= bright_e
+    leather_like = s < ls_max and edge_d <= le_max and grad_mean <= lg_max
+
+    if strong_sports or bright_sports:
         return ShoeCategory.SPORTS
-    return ShoeCategory.UNKNOWN
+    if leather_like:
+        return ShoeCategory.LEATHER
+    return ShoeCategory.CASUAL
 
 
 def encode_jpeg(bgr: np.ndarray, quality: int = 80) -> bytes | None:

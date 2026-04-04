@@ -6,6 +6,7 @@ numpy>=1.24.0
 Pillow>=10.0.0
 PyYAML>=6.0
 python-dotenv>=1.0.0
+pyserial>=3.5  # ESP32 USB serial telemetry (serial_bridge)
 
 # Pi runtime for Phase 2 TFLite shoe model (optional):
 # tflite-runtime>=2.14.0
