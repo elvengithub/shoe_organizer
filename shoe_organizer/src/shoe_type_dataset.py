@@ -1,8 +1,13 @@
 """
-Match a live (preprocessed) frame to reference images under datasets/shoe_types/{sports,casual,leather}/.
+Match a live (preprocessed) frame to reference images under datasets/shoe_types/{sports,casual}/.
+Legacy folder "leather/" is merged into casual references.
 
-Uses the same HSV + gray + LAB histogram fusion as shoe_catalog. Add several photos per type taken
-from your booth (similar crop/lighting) for best results.
+When ``shoe_type_dataset.reference_subfolder`` (default ``clean``) exists under a type
+folder and contains at least one image, only that subfolder is loaded so ``clean/``
+booth photos are not mixed with older images in the parent directory.
+
+Uses the same HSV + gray + LAB histogram fusion as shoe_catalog. Add several photos per type
+taken from your booth (similar crop/lighting) for best results.
 """
 from __future__ import annotations
 
@@ -15,10 +20,11 @@ import numpy as np
 from .config_loader import load_config
 from .shoe_catalog import _compute_hists, _hist_score, _read_bgr
 from .vision_preprocess import apply_vision_preprocess
+from .vision_service import leather_like_casual_preferred, leather_like_strong_casual_override
 
 log = logging.getLogger(__name__)
 
-_ALLOWED_TYPES = frozenset({"sports", "casual", "leather"})
+_ALLOWED_TYPES = frozenset({"sports", "casual"})
 
 _EXT = {".avif", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -68,9 +74,44 @@ def _hist_cfg(cfg: dict) -> dict:
     }
 
 
+def _iter_type_image_paths(type_dir: Path, block: dict) -> tuple[list[Path], bool]:
+    """
+    Image paths for one shoe type folder (e.g. casual/ or sports/).
+
+    If ``reference_subfolder`` (default ``clean``) exists under type_dir and has at
+    least one image, only that subfolder is used so clean booth-style references
+    are not averaged with legacy/dirty images in the parent folder.
+    """
+    rs = block.get("reference_subfolder", "clean")
+    sub_name = "" if rs is None else str(rs).strip().strip("/\\")
+    used_clean_only = False
+    if not sub_name:
+        paths = sorted(type_dir.rglob("*"))
+    else:
+        clean_dir = type_dir / sub_name
+        has_clean = False
+        if clean_dir.is_dir():
+            for p in clean_dir.rglob("*"):
+                if p.is_file() and p.suffix.lower() in _EXT:
+                    has_clean = True
+                    break
+        if has_clean:
+            paths = sorted(clean_dir.rglob("*"))
+            used_clean_only = True
+        else:
+            paths = sorted(type_dir.rglob("*"))
+    out_paths: list[Path] = []
+    for path in paths:
+        if not path.is_file() or path.suffix.lower() not in _EXT:
+            continue
+        out_paths.append(path)
+    return out_paths, used_clean_only
+
+
 def _load_type_galleries(cfg: dict) -> dict[str, list[tuple[np.ndarray, np.ndarray, np.ndarray]]]:
     global _gallery_cache, _cache_key
-    root = _project_root() / str(cfg.get("shoe_type_dataset", {}).get("path", "datasets/shoe_types"))
+    block = cfg.get("shoe_type_dataset", {}) or {}
+    root = _project_root() / str(block.get("path", "datasets/shoe_types"))
     key = (_tree_mtime(root), _config_mtime())
     if _gallery_cache is not None and _cache_key == key:
         return _gallery_cache
@@ -87,18 +128,35 @@ def _load_type_galleries(cfg: dict) -> dict[str, list[tuple[np.ndarray, np.ndarr
         if not sub.is_dir():
             continue
         tkey = sub.name.lower()
+        if tkey == "leather":
+            tkey = "casual"
         if tkey not in _ALLOWED_TYPES:
             log.debug("skip unknown shoe_types folder: %s", sub.name)
             continue
-        for path in sorted(sub.rglob("*")):
-            if not path.is_file() or path.suffix.lower() not in _EXT:
-                continue
+        image_paths, using_clean_only = _iter_type_image_paths(sub, block)
+        rs = block.get("reference_subfolder", "clean")
+        sub_name = "" if rs is None else str(rs).strip().strip("/\\")
+        # Do not merge legacy leather/* stock photos into casual when using clean/ refs
+        # and leather has no leather/clean/ (would dilute casual/clean histograms).
+        if (
+            sub.name.lower() == "leather"
+            and sub_name
+            and not using_clean_only
+        ):
+            log.debug("skip leather/ (no %s/ refs while reference_subfolder is set)", sub_name)
+            continue
+        for path in image_paths:
             bgr = _read_bgr(path)
             if bgr is None or bgr.size == 0:
                 log.warning("skip unreadable type image: %s", path)
                 continue
-            bgr = apply_vision_preprocess(bgr, cfg)
-            out[tkey].append(_compute_hists(bgr, hc))
+            try:
+                bgr = apply_vision_preprocess(bgr, cfg)
+                out[tkey].append(_compute_hists(bgr, hc))
+            except Exception as e:
+                log.warning("skip shoe_types image (preprocess/hist failed) %s: %s", path, e)
+        if using_clean_only:
+            log.info("shoe_type_dataset %s: using %s/ only (%d images)", tkey, sub_name, len(out[tkey]))
 
     n = sum(len(v) for v in out.values())
     log.info("shoe_type_dataset loaded: %d refs in %s", n, root)
@@ -131,11 +189,14 @@ def match_shoe_type_from_dataset(
 
     galleries = _load_type_galleries(cfg)
     hc = _hist_cfg(cfg)
-    q_h, q_g, q_l = _compute_hists(bgr, hc)
-
-    scores_by_type = compute_type_histogram_scores(
-        q_h, q_g, q_l, galleries, hc, block
-    )
+    try:
+        q_h, q_g, q_l = _compute_hists(bgr, hc)
+        scores_by_type = compute_type_histogram_scores(
+            q_h, q_g, q_l, galleries, hc, block
+        )
+    except Exception as e:
+        log.warning("shoe_type_dataset histogram compare failed: %s", e)
+        return ShoeTypeDatasetMatch(False, None, 0.0, {})
 
     # Only consider types that have at least one reference
     candidates = {k: v for k, v in scores_by_type.items() if v >= 0}
@@ -145,11 +206,32 @@ def match_shoe_type_from_dataset(
     sorted_types = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)
     winner, win_score = sorted_types[0]
     thr = float(block.get("min_match_score", 0.32))
+
+    forced_leather_casual = False
+    if bool(block.get("leather_like_override_dataset_sports", True)) and winner == "sports":
+        casual_s = float(scores_by_type.get("casual", -1.0))
+        gap = (win_score - casual_s) if casual_s >= 0.0 else 999.0
+        soft_gap = float(block.get("leather_like_histogram_gap_soft", 0.22))
+        min_casual_flip = float(block.get("leather_like_min_casual_score_flip", 0.14))
+
+        if casual_s >= 0.0 and leather_like_strong_casual_override(bgr, cfg):
+            winner, win_score = "casual", casual_s
+            forced_leather_casual = True
+        elif leather_like_casual_preferred(bgr, cfg) and casual_s >= 0.0:
+            if gap < soft_gap or casual_s >= min_casual_flip:
+                winner, win_score = "casual", casual_s
+                forced_leather_casual = True
+
     if win_score < thr:
-        return ShoeTypeDatasetMatch(False, None, float(win_score), scores_by_type)
+        if not (
+            forced_leather_casual
+            and winner == "casual"
+            and bool(block.get("leather_like_accept_weak_casual_histogram", True))
+        ):
+            return ShoeTypeDatasetMatch(False, None, float(win_score), scores_by_type)
 
     margin = float(block.get("min_margin", 0.0))
-    if margin > 0 and len(sorted_types) > 1:
+    if margin > 0 and len(sorted_types) > 1 and not forced_leather_casual:
         second = sorted_types[1][1]
         if win_score - second < margin:
             return ShoeTypeDatasetMatch(False, None, float(win_score), scores_by_type)

@@ -174,9 +174,14 @@ def _load_gallery(cfg: dict) -> list[_GalleryEntry]:
         if bgr is None or bgr.size == 0:
             log.warning("skip unreadable catalog image: %s", path)
             continue
-        bgr = apply_vision_preprocess(bgr, cfg)
-        h_hist, g_hist, lab_hist = _compute_hists(bgr, sc)
-        entries.append(_GalleryEntry(category=category, style=style, h_hist=h_hist, g_hist=g_hist, lab_hist=lab_hist))
+        try:
+            bgr = apply_vision_preprocess(bgr, cfg)
+            h_hist, g_hist, lab_hist = _compute_hists(bgr, sc)
+            entries.append(
+                _GalleryEntry(category=category, style=style, h_hist=h_hist, g_hist=g_hist, lab_hist=lab_hist)
+            )
+        except Exception as e:
+            log.warning("skip catalog image (preprocess/hist failed) %s: %s", path, e)
 
     _gallery_cache = entries
     _gallery_cache_key = key

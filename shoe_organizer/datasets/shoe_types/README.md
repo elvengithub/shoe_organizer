@@ -1,14 +1,19 @@
-# Shoe type reference images (sports · casual · leather)
+# Shoe type reference images (sports · casual)
 
-Add **several photos per type** taken from your cleaning bay (same camera angle and crop you use live). Use `.jpg`, `.png`, or `.webp`.
+Add **several photos per type** from your cleaning bay (same camera angle and crop as the live view). Use `.jpg`, `.png`, or `.webp`.
 
 ```
 datasets/shoe_types/
-  sports/    ← running shoes, trainers, cleats, etc.
-  casual/    ← everyday sneakers, sandals, canvas, etc.
-  leather/   ← dress shoes, loafers, polished leather boots, etc.
+  sports/    ← trainers, runners, mesh athletic shoes you want labeled “sports”
+  casual/    ← smooth sneakers, canvas, minimal slip-ons you want labeled “casual”
 ```
 
-The server compares the live frame to these folders with the same histogram matcher as `datasets/shoes`, then **fuses** those scores with live OpenCV cues and your `datasets/shoes` folder names (see `shoe_type_dataset.fusion` in `config.yaml`). Use **`top_k_refs`** (mean of best K matches per type) for stabler results. Tune `weight_histogram`, `weight_vision`, `weight_catalog`, and `temperature` if the wrong type wins.
+With `vision.rule_based_pipeline: true` and `shoe_type_dataset.refine_rule_based_type: true` in `config.yaml`, the server:
 
-If a folder is **empty**, that type is ignored. If **no folder** has images, classification falls back to catalog folders + OpenCV heuristics only.
+1. Computes **fusion** cues on the live frame (edges, texture, saturation).
+2. Compares the frame to your **sports** and **casual** folders (HSV + gray + LAB histograms, same as the main shoe catalog).
+3. If the histogram match passes `min_match_score` and `min_margin`, that **overrides** the fusion label for the final sports/casual decision.
+
+If a folder is **empty**, that type is ignored. If the match is not confident enough, the answer stays **fusion-only** (see API `shoe_type_dataset_scores` and `inference_backend`).
+
+A legacy `leather/` folder, if present, is treated as extra **casual** references.

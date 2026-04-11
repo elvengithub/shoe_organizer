@@ -1,4 +1,4 @@
-"""Temporal smoothing for sports | leather | casual to reduce frame-to-frame flicker."""
+"""Temporal smoothing for sports | casual to reduce frame-to-frame flicker."""
 from __future__ import annotations
 
 from collections import Counter, deque
@@ -19,7 +19,9 @@ class ShoeTypeSmoother:
 
     def update(self, shoe_type: str) -> str:
         t = (shoe_type or "casual").lower()
-        if t not in ("casual", "sports", "leather"):
+        if t == "leather":
+            t = "casual"
+        if t not in ("casual", "sports"):
             t = "casual"
         self._buf.append(t)
         if len(self._buf) == 1:

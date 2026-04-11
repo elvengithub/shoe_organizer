@@ -63,12 +63,12 @@ def _infer_dirt_score(tokens: list[str], cfg: dict) -> float:
 
 
 def _infer_shoe_type(tokens: list[str]) -> str:
-    """Always one of: casual, sports, leather."""
+    """Always one of: casual, sports."""
     ts = " ".join(tokens)
     if any(h in ts for h in _SPORTS_HINTS):
         return "sports"
     if any(h in ts for h in _LEATHER_HINTS) or any(h in ts for h in _DRESS_HINTS):
-        return "leather"
+        return "casual"
     if any(h in ts for h in _CASUAL_HINTS):
         return "casual"
     if "shoe" in tokens or "shoes" in tokens or "boot" in tokens or "boots" in tokens:

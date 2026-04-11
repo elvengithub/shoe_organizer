@@ -202,6 +202,14 @@ def create_app() -> Flask:
             "shoe_type_label": format_shoe_display_name(st, sl, r.catalog_category, r.catalog_style),
             "wash_label": wash_ui_label(r.wash.mode, st),
         }
+        if r.edge_density is not None:
+            extra["edge_density"] = round(float(r.edge_density), 4)
+        if r.sports_edge_density_min is not None:
+            extra["sports_edge_density_min"] = float(r.sports_edge_density_min)
+        if r.sports_fusion_score is not None:
+            extra["sports_fusion_score"] = round(float(r.sports_fusion_score), 4)
+        if r.sports_fusion_threshold is not None:
+            extra["sports_fusion_threshold"] = float(r.sports_fusion_threshold)
         return jsonify(
             {
                 "ok": True,
@@ -222,25 +230,41 @@ def create_app() -> Flask:
             }
         )
 
+    @app.get("/api/esp32/ping")
+    def esp32_ping():
+        """
+        ESP32 (MicroPython) connectivity check: GET from the same host:port as POST /api/esp32/telemetry.
+        No auth — use only on a trusted LAN. Confirms Flask is listening and reachable from Wi-Fi.
+        """
+        return jsonify({"ok": True, "service": "shoe_organizer"})
+
     @app.post("/api/esp32/telemetry")
     def esp32_telemetry_post():
         """
         MicroPython on ESP32: POST JSON from DHT22, gas ADC, HC-SR04-style distance.
         Merges into /api/status for esp32_telemetry.compartment_id when fresh.
         """
-        o = orch()
-        cfg = o.cfg
-        block = cfg.get("esp32_telemetry") or {}
-        if not block.get("enabled"):
-            return jsonify({"ok": False, "error": "esp32_telemetry_disabled"}), 404
-        if not verify_esp32_secret(cfg, request):
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
-        body = request.get_json(force=True, silent=True)
-        if not isinstance(body, dict):
-            return jsonify({"ok": False, "error": "expected_json_object"}), 400
-        update_from_body(body, cfg)
-        log.debug("esp32 telemetry: keys=%s", list(body.keys()))
-        return jsonify({"ok": True})
+        try:
+            o = orch()
+            cfg = o.cfg
+            block = cfg.get("esp32_telemetry") or {}
+            if not block.get("enabled"):
+                return jsonify({"ok": False, "error": "esp32_telemetry_disabled"}), 404
+            if not verify_esp32_secret(cfg, request):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            body = request.get_json(force=True, silent=True)
+            if not isinstance(body, dict):
+                log.warning(
+                    "esp32 telemetry: expected JSON object; content_type=%s",
+                    request.content_type,
+                )
+                return jsonify({"ok": False, "error": "expected_json_object"}), 400
+            update_from_body(body, cfg)
+            log.info("esp32 telemetry ok: keys=%s", list(body.keys()))
+            return jsonify({"ok": True})
+        except Exception as e:
+            log.exception("esp32 telemetry POST failed: %s", e)
+            return jsonify({"ok": False, "error": "server_error"}), 500
 
     @app.get("/api/esp32/telemetry")
     def esp32_telemetry_get():

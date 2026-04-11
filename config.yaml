@@ -66,6 +66,15 @@ shoe_gate:
   max_aspect_ratio: 7.5
   min_solidity: 0.32
 
+# Optional ONNX shoe detector (jmaloney95/Shoe-ObjectDetection-and-ImageClassification–style). See shoe_onnx_gate.py.
+shoe_object_detection:
+  enabled: false
+  onnx_path: models/shoe_detect.onnx
+  input_name: images
+  input_size: 640
+  confidence_threshold: 0.5
+  min_box_area_ratio: 0.015
+
 # Block faces / skin-dominated frames from being classified as shoes (same UI: "Not a shoe.").
 anti_face:
   enabled: true
@@ -107,13 +116,49 @@ esp32_telemetry:
     port: auto
     baud: 115200
 
-# Flask (touch LCD shows this in Chromium kiosk)
+# Flask (touch LCD shows this in Chromium kiosk). MicroPython Wi-Fi uses the same host:port as SERVER_BASE
+# (LAN IP of this machine, not 127.0.0.1) for POST /api/esp32/telemetry and GET /api/esp32/ping.
 server:
   host: 0.0.0.0
   port: 8080
 
 # Decision thresholds (tune with real images)
 vision:
+  # OpenCV-only pipeline: edge density → shoe type; HSV/variance → dirt; wash rules in wash_decision.py
+  # When true: no catalog match, no TFLite shoe binary, no not-shoe template gallery, no histogram type fusion.
+  rule_based_pipeline: true
+  sports_edge_density_min: 0.09
+  sports_fusion_threshold: 0.48
+  sports_edge_cap: 0.22
+  sports_grad_cap: 0.14
+  sports_texture_cap: 0.10
+  sports_fusion_weight_edge: 0.28
+  sports_fusion_weight_gradient: 0.34
+  sports_fusion_weight_texture: 0.30
+  sports_fusion_weight_saturation: 0.08
+  sports_mesh_texture_min: 0.055
+  sports_mesh_grad_min: 0.088
+  sports_mesh_boost: 0.10
+  casual_smooth_texture_max: 0.042
+  casual_smooth_saturation_max: 0.38
+  sports_smooth_casual_penalty: 0.68
+  sports_low_brightness_penalty_v: 0.22
+  sports_low_brightness_penalty_factor: 0.92
+  rule_leather_saturation_max: 58
+  rule_leather_brightness_v_max: 135
+  rule_leather_edge_density_max: 0.12
+  dirt_ratio_clean_below: 0.05
+  dirt_ratio_moderate_below: 0.15
+  dirt_blend_ratio: 0.55
+  dirt_blend_std: 0.30
+  dirt_blend_noise: 0.15
+  dirt_hue_min: 8
+  dirt_hue_max: 32
+  dirt_sat_min: 20
+  dirt_value_brown_min: 35
+  dirt_value_brown_max: 220
+  dirt_dark_v_max: 75
+  dirt_dark_sat_min: 15
   dirt_edge_threshold: 0.12
   # Three-way type from camera (casual / sports / leather)
   leather_saturation_max: 52
@@ -173,6 +218,7 @@ wash:
 shoe_type_dataset:
   enabled: true
   path: datasets/shoe_types
+  refine_rule_based_type: true
   # Legacy single-signal gate (used when fusion.enabled is false)
   min_match_score: 0.32
   min_margin: 0.015

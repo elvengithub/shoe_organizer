@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,9 @@ from .shoe_catalog import match_against_catalog
 from .shoe_decision import raw_shoe_acceptance
 from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name
 from .shoe_type_classifier import classification_to_api_dict, classify_shoe_type
+from .shoe_type_dataset import match_shoe_type_from_dataset
 from .vision_preprocess import apply_vision_preprocess
-from .vision_service import VisionResult, analyze_frame, encode_jpeg
+from .vision_service import ShoeCategory, VisionResult, analyze_frame, encode_jpeg
 from .wash_decision import WashPlan, decide_wash, wash_ui_label
 
 log = logging.getLogger(__name__)
@@ -151,6 +153,96 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
         return None, None, _detail_not_shoe(dbg.get("gate_reason", stage), stage, dbg)
 
     gate_reason = str(dbg.get("gate_reason", "ok"))
+
+    if bool(cfg.get("vision", {}).get("rule_based_pipeline", False)):
+        vision = analyze_frame(bgr, cfg)
+        std = cfg.get("shoe_type_dataset", {}) or {}
+        td_match = None
+        if bool(std.get("enabled", True)):
+            try:
+                td_match = match_shoe_type_from_dataset(bgr, cfg, already_preprocessed=True)
+            except Exception as e:
+                log.warning("shoe_type_dataset match failed (using vision only): %s", e)
+                td_match = None
+
+        # Dataset histogram match is the PRIMARY classifier (most accurate).
+        # Vision rule-based fusion is the FALLBACK when dataset has no confident match.
+        if td_match is not None and td_match.matched and td_match.shoe_type:
+            shoe_type = td_match.shoe_type
+            vision = replace(
+                vision,
+                category=ShoeCategory.SPORTS if shoe_type == "sports" else ShoeCategory.CASUAL,
+            )
+            log.info("shoe type from DATASET match: %s (score=%.3f, scores=%s)",
+                     shoe_type, td_match.score, td_match.scores_by_type)
+        else:
+            shoe_type = vision.category.value
+            log.info("shoe type from VISION rules (no dataset match): %s (fusion=%.3f)",
+                     shoe_type, vision.sports_fusion_score or 0.0)
+        wash = decide_wash(vision, shoe_type)
+        type_short = SHOE_TYPE_LABELS[shoe_type]
+        shoe_type_label = format_shoe_display_name(shoe_type, type_short, None, None)
+        wash_label = wash_ui_label(wash.mode, shoe_type)
+        vm = cfg.get("vision", {})
+        thr_edge = float(vm.get("sports_edge_density_min", 0.09))
+        backend = "opencv_rules"
+        if td_match is not None:
+            if td_match.matched:
+                backend = "opencv_rules_plus_shoe_types_dataset"
+            elif any(v >= 0.0 for v in td_match.scores_by_type.values()):
+                backend = "opencv_rules_dataset_no_confident_match"
+        detail: dict[str, Any] = {
+            "is_shoe": True,
+            "raw_is_shoe": True,
+            "reject_stage": None,
+            "catalog_match": True,
+            "object_classification": f"shoe_{shoe_type}",
+            "classification_error": None,
+            "reject_detail": "",
+            "shoe_category": shoe_type,
+            "shoe_type_label": shoe_type_label,
+            "shoe_type_short": type_short,
+            "dirt_score": round(float(vision.dirt_score), 4),
+            "dirt_level": vision.dirt_level,
+            "edge_density": round(float(vision.edge_density), 4) if vision.edge_density is not None else None,
+            "sports_edge_density_min": round(thr_edge, 4),
+            "sports_fusion_score": round(float(vision.sports_fusion_score), 4)
+            if vision.sports_fusion_score is not None
+            else None,
+            "sports_fusion_threshold": round(float(vision.sports_fusion_threshold), 4)
+            if vision.sports_fusion_threshold is not None
+            else None,
+            "gradient_mean": round(float(vision.gradient_mean), 4) if vision.gradient_mean is not None else None,
+            "texture_rms": round(float(vision.texture_rms), 4) if vision.texture_rms is not None else None,
+            "saturation_mean": round(float(vision.saturation_mean), 2) if vision.saturation_mean is not None else None,
+            "dirty_pixel_ratio": round(float(vision.dirty_pixel_ratio), 4) if vision.dirty_pixel_ratio is not None else None,
+            "wash_mode": wash.mode,
+            "wash_label": wash_label,
+            "wash_reason": wash.reason,
+            "inference_backend": backend,
+            "gate_reason": gate_reason,
+            "catalog_category": None,
+            "catalog_style": None,
+            "catalog_score": None,
+            "shoe_type_dataset_matched": bool(td_match.matched) if td_match is not None else False,
+            "shoe_type_dataset_score": (
+                round(float(td_match.score), 4)
+                if td_match is not None and td_match.matched
+                else None
+            ),
+            "shoe_type_dataset_scores": (
+                {k: round(float(v), 4) for k, v in td_match.scores_by_type.items()}
+                if td_match is not None
+                else {}
+            ),
+            "leather_like_casual": bool(vision.leather_like_casual)
+            if vision.leather_like_casual is not None
+            else None,
+        }
+        if "tflite_p_shoe" in dbg:
+            detail["tflite_p_shoe"] = dbg["tflite_p_shoe"]
+        return vision, wash, detail
+
     cm = match_against_catalog(bgr, cfg, already_preprocessed=True)
     if not cm.matched:
         return None, None, _detail_no_catalog(cm.score, gate_reason)

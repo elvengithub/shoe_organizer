@@ -35,6 +35,9 @@ def raw_shoe_acceptance(bgr_preprocessed, cfg: dict | None = None) -> tuple[bool
         dbg["anti_face_reason"] = af_reason
         return False, "anti_face", dbg
 
+    if bool(cfg.get("vision", {}).get("rule_based_pipeline", False)):
+        return True, "ok", dbg
+
     sb = cfg.get("shoe_binary", {})
     model_rel = sb.get("model_path", "models/shoe_binary.tflite")
     model_path = _root() / model_rel

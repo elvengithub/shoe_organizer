@@ -20,6 +20,25 @@ from .wash_decision import WashPlan, decide_wash, wash_ui_label
 log = logging.getLogger(__name__)
 
 
+def _vision_rule_debug(
+    vision: VisionResult | None, cfg: dict,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """When rule_based_pipeline is on, expose edge + fusion scores for API / tuning."""
+    vm = cfg.get("vision", {})
+    if not vision or not vm.get("rule_based_pipeline"):
+        return None, None, None, None
+    thr_edge = float(vm.get("sports_edge_density_min", 0.09))
+    ed = vision.edge_density
+    fs = vision.sports_fusion_score
+    ft = vision.sports_fusion_threshold
+    return (
+        float(ed) if ed is not None else None,
+        thr_edge,
+        float(fs) if fs is not None else None,
+        float(ft) if ft is not None else None,
+    )
+
+
 @dataclass
 class CycleResult:
     wash: WashPlan
@@ -34,6 +53,10 @@ class CycleResult:
     reject_stage: str | None = None
     classification_error: str | None = None
     reject_detail: str | None = None
+    edge_density: float | None = None
+    sports_edge_density_min: float | None = None
+    sports_fusion_score: float | None = None
+    sports_fusion_threshold: float | None = None
 
 
 class ShoeOrganizerOrchestrator:
@@ -195,6 +218,7 @@ class ShoeOrganizerOrchestrator:
             csc = float(raw_sc) if raw_sc is not None else None
         except (TypeError, ValueError):
             csc = None
+        ed_dbg, thr_dbg, fus_dbg, fus_thr_dbg = _vision_rule_debug(vision, self.cfg)
         slot = self.pick_free_storage_slot()
         if slot is None:
             return CycleResult(
@@ -206,6 +230,10 @@ class ShoeOrganizerOrchestrator:
                 catalog_category=cc,
                 catalog_style=cs,
                 catalog_score=csc,
+                edge_density=ed_dbg,
+                sports_edge_density_min=thr_dbg,
+                sports_fusion_score=fus_dbg,
+                sports_fusion_threshold=fus_thr_dbg,
             )
         try:
             self.motion.goto_compartment_y_index(slot)
@@ -220,6 +248,10 @@ class ShoeOrganizerOrchestrator:
                 catalog_category=cc,
                 catalog_style=cs,
                 catalog_score=csc,
+                edge_density=ed_dbg,
+                sports_edge_density_min=thr_dbg,
+                sports_fusion_score=fus_dbg,
+                sports_fusion_threshold=fus_thr_dbg,
             )
         for cid in self.cfg["compartments"]["storage_ids"]:
             self.sensors.set_ventilation(cid, False)
@@ -233,6 +265,10 @@ class ShoeOrganizerOrchestrator:
             catalog_category=cc,
             catalog_style=cs,
             catalog_score=csc,
+            edge_density=ed_dbg,
+            sports_edge_density_min=thr_dbg,
+            sports_fusion_score=fus_dbg,
+            sports_fusion_threshold=fus_thr_dbg,
         )
 
     def climate_snapshot(self) -> dict:
@@ -311,12 +347,31 @@ class ShoeOrganizerOrchestrator:
         smooth_cat = self._type_smoother.update(raw_cat)
         detail["shoe_category_raw"] = raw_cat
         detail["shoe_category"] = smooth_cat
-        vis = VisionResult(dirt_score=float(detail["dirt_score"]), category=ShoeCategory.CASUAL)
+        dl = detail.get("dirt_level")
+        ed = detail.get("edge_density")
+        dpr = detail.get("dirty_pixel_ratio")
+        sfs = detail.get("sports_fusion_score")
+        sft = detail.get("sports_fusion_threshold")
+        gm = detail.get("gradient_mean")
+        tr = detail.get("texture_rms")
+        sm = detail.get("saturation_mean")
+        vis = VisionResult(
+            dirt_score=float(detail["dirt_score"]),
+            category=ShoeCategory.CASUAL,
+            dirt_level=str(dl) if dl is not None else None,
+            edge_density=float(ed) if ed is not None else None,
+            dirty_pixel_ratio=float(dpr) if dpr is not None else None,
+            sports_fusion_score=float(sfs) if sfs is not None else None,
+            sports_fusion_threshold=float(sft) if sft is not None else None,
+            gradient_mean=float(gm) if gm is not None else None,
+            texture_rms=float(tr) if tr is not None else None,
+            saturation_mean=float(sm) if sm is not None else None,
+        )
         wplan = decide_wash(vis, smooth_cat)
         detail["wash_mode"] = wplan.mode
         detail["wash_label"] = wash_ui_label(wplan.mode, smooth_cat)
         detail["wash_reason"] = wplan.reason
-        ts = SHOE_TYPE_LABELS[smooth_cat]
+        ts = SHOE_TYPE_LABELS.get(smooth_cat, (smooth_cat or "casual").title())
         detail["shoe_type_short"] = ts
         detail["shoe_type_label"] = format_shoe_display_name(
             smooth_cat, ts, detail.get("catalog_category"), detail.get("catalog_style")
@@ -326,4 +381,17 @@ class ShoeOrganizerOrchestrator:
         if isinstance(scores, dict) and smooth_cat in scores:
             v = scores[smooth_cat]
             detail["shoe_type_dataset_score"] = round(float(v), 4) if float(v) >= 0.0 else None
+        vm = self.cfg.get("vision", {})
+        if vm.get("rule_based_pipeline") and detail.get("sports_edge_density_min") is None:
+            detail["sports_edge_density_min"] = round(float(vm.get("sports_edge_density_min", 0.09)), 4)
+        if vm.get("rule_based_pipeline") and detail.get("sports_fusion_threshold") is None:
+            detail["sports_fusion_threshold"] = round(float(vm.get("sports_fusion_threshold", 0.48)), 4)
+        if vm.get("rule_based_pipeline") and detail.get("edge_density") is not None:
+            log.debug(
+                "rule shoe type: fusion=%s thr=%s edge=%s category=%s",
+                detail.get("sports_fusion_score"),
+                detail.get("sports_fusion_threshold"),
+                detail.get("edge_density"),
+                smooth_cat,
+            )
         return {"ok": True, "error": None, **detail}

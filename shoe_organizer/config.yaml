@@ -66,6 +66,16 @@ shoe_gate:
   max_aspect_ratio: 7.5
   min_solidity: 0.32
 
+# Optional ONNX shoe detector (same preprocessing idea as github.com/jmaloney95/Shoe-ObjectDetection-and-ImageClassification).
+# Copy your .onnx weights under models/ and set onnx_path. If disabled or file missing, classic contour gate above is used.
+shoe_object_detection:
+  enabled: false
+  onnx_path: models/shoe_detect.onnx
+  input_name: images
+  input_size: 640
+  confidence_threshold: 0.5
+  min_box_area_ratio: 0.015
+
 # Block faces / skin-dominated frames from being classified as shoes (same UI: "Not a shoe.").
 anti_face:
   enabled: true
@@ -116,6 +126,29 @@ server:
 
 # Decision thresholds (tune with real images)
 vision:
+  # OpenCV-only: sports vs casual = fused score (edges + gradient + texture + saturation); dirt from HSV + variance
+  rule_based_pipeline: true
+  # Legacy debug: min Canny edge fraction (shown in UI); decision uses sports_fusion_* below
+  sports_edge_density_min: 0.09
+  # Fusion score 0..1; sports if score >= threshold (tune with kiosk "Type" line)
+  # New segmented classifier: features are computed on shoe pixels only (background excluded)
+  # Lower threshold = more "sports", higher = more "casual". Default 0.50 is balanced.
+  sports_fusion_threshold: 0.50
+  rule_leather_saturation_max: 58
+  rule_leather_brightness_v_max: 135
+  rule_leather_edge_density_max: 0.12
+  dirt_ratio_clean_below: 0.05
+  dirt_ratio_moderate_below: 0.15
+  dirt_blend_ratio: 0.55
+  dirt_blend_std: 0.30
+  dirt_blend_noise: 0.15
+  dirt_hue_min: 8
+  dirt_hue_max: 32
+  dirt_sat_min: 20
+  dirt_value_brown_min: 35
+  dirt_value_brown_max: 220
+  dirt_dark_v_max: 75
+  dirt_dark_sat_min: 15
   dirt_edge_threshold: 0.12
   # Three-way type from camera (casual / sports / leather)
   leather_saturation_max: 52
@@ -164,22 +197,42 @@ vision:
   sports_mesh_low_sat_gradient_min: 0.148
   sports_mesh_low_sat_min: 18
 
+  # --- Leather / dress / muted casual (mapped to "casual", not "sports") ---
+  leather_like_detection_enabled: true
+  leather_like_rule_casual_boost: 0.26
+  leather_like_rule_sports_scale: 0.42
+  leather_like_rule_sole_contrast_penalty: 0.06
+
 wash:
   hard_if_dirt_above: 0.35
   sports_hard_if_dirt_above: 0.22
   casual_hard_if_dirt_above: 0.28
 
-# Three-way type ID: put reference photos under datasets/shoe_types/{sports,casual,leather}/
-# Same preprocess + histograms as shoe_catalog. If a type wins above min_match_score (and margin),
-# that type is used; otherwise fall back to catalog + vision heuristics.
+# Reference photos: put clean booth examples under datasets/shoe_types/casual/clean/ and
+# datasets/shoe_types/sports/clean/ (same ROI + lighting as live view). If clean/ has at
+# least one image for a type, only that folder is used for that type (parent-folder junk ignored).
 shoe_type_dataset:
   enabled: true
   path: datasets/shoe_types
-  # Legacy single-signal gate (used when fusion.enabled is false)
-  min_match_score: 0.32
-  min_margin: 0.015
-  # Mean of best K histogram matches per type (stabler than a single outlier ref)
-  top_k_refs: 2
+  refine_rule_based_type: true
+  # Subfolder name under each type; if it exists and has images, ONLY those files are references.
+  reference_subfolder: clean
+  # Slightly larger than shoe_catalog default so shape/color detail matches your clean refs.
+  resize: 200
+  # Histogram match threshold — dataset is the PRIMARY classifier, vision rules are fallback.
+  min_match_score: 0.22
+  # Require some separation between sports vs casual scores (reduces coin-flip errors).
+  min_margin: 0.02
+  # Blend Bhattacharyya distance for more noise-robust matching (clean ref vs dirtier live shoe).
+  blend_bhattacharyya: true
+  bhattacharyya_mix: 0.30
+  # Mean of best K histogram matches per type (use 3 when you have several clean refs per type).
+  top_k_refs: 3
+  # If histogram picks "sports" but frame looks like leather/dress (muted), prefer "casual".
+  leather_like_override_dataset_sports: true
+  leather_like_histogram_gap_soft: 0.22
+  leather_like_min_casual_score_flip: 0.14
+  leather_like_accept_weak_casual_histogram: true
   fusion:
     enabled: true
     # Vision weighted slightly higher — frame cues beat noisy histograms when refs are sparse

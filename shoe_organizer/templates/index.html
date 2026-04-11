@@ -173,10 +173,16 @@
           washEl.textContent = j.wash_label || j.wash_mode || "—";
           reasonEl.textContent = j.message || "Hold steady…";
           const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
+          const dbgLine =
+            j.sports_fusion_score != null && j.sports_fusion_threshold != null
+              ? `Type: ${Number(j.sports_fusion_score).toFixed(2)} · sports if ≥ ${Number(j.sports_fusion_threshold).toFixed(2)} · `
+              : j.edge_density != null && j.sports_edge_density_min != null
+                ? `Edges: ${Number(j.edge_density).toFixed(3)} · sports if > ${Number(j.sports_edge_density_min).toFixed(3)} · `
+                : "";
           dirtEl.textContent =
             j.dirt_score != null
-              ? `${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
-              : cat || "";
+              ? `${dbgLine}${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
+              : dbgLine || cat || "";
           washChipEl.classList.remove("wash-hard", "wash-soft");
           washChipEl.classList.add(j.wash_mode === "hard" ? "wash-hard" : "wash-soft");
           maybeAutoIntake(j);
@@ -186,10 +192,16 @@
         washEl.textContent = j.wash_label || j.wash_mode || "—";
         reasonEl.textContent = j.wash_reason ? String(j.wash_reason) : "";
         const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
+        const dbgLineOk =
+          j.sports_fusion_score != null && j.sports_fusion_threshold != null
+            ? `Type: ${Number(j.sports_fusion_score).toFixed(2)} · sports if ≥ ${Number(j.sports_fusion_threshold).toFixed(2)} · `
+            : j.edge_density != null && j.sports_edge_density_min != null
+              ? `Edges: ${Number(j.edge_density).toFixed(3)} · sports if > ${Number(j.sports_edge_density_min).toFixed(3)} · `
+              : "";
         dirtEl.textContent =
           j.dirt_score != null
-            ? `${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
-            : cat || "";
+            ? `${dbgLineOk}${cat ? `${cat} · ` : ""}Soil: ${Number(j.dirt_score).toFixed(2)} (0–1)`
+            : dbgLineOk || cat || "";
         washChipEl.classList.remove("wash-hard", "wash-soft");
         washChipEl.classList.add(j.wash_mode === "hard" ? "wash-hard" : "wash-soft");
         maybeAutoIntake(j);

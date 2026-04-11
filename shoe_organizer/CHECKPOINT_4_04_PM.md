@@ -11,7 +11,7 @@ Use this label in chat when you want to refer back to **this recorded state** of
 - **Shoe types (three only):** **Sports**, **Casual**, **Leather** — vision heuristics in `vision_service.py` (saturation, edges, Sobel gradient); `shoe_taxonomy.py` maps catalog + vision to those three; `wash_decision.py` and text path aligned.
 - **Type dataset:** `datasets/shoe_types/{sports,casual,leather}/` + `shoe_type_dataset.py` histogram matcher + `config.yaml` block `shoe_type_dataset`; wired in `ai_camera.py` with `shoe_type_dataset_*` API fields.
 
-## Paths (inner project root)
+## Paths (inner project root) 
 
 - Code: `src/` (app, orchestrator, ai_camera, shoe_type_dataset, vision, etc.)
 - Config: `config.yaml`

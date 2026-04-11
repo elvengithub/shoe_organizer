@@ -1,5 +1,5 @@
 """
-Fused shoe-type classification: sports | casual | leather.
+Fused shoe-type classification: sports | casual.
 
 Combines (1) histogram similarity to datasets/shoe_types/ (mean of top-k refs per type),
 (2) OpenCV vision prior from the live frame, (3) shoe style catalog folder names when available.
@@ -19,7 +19,7 @@ from .shoe_taxonomy import resolve_shoe_type
 from .shoe_type_dataset import compute_type_histogram_scores_from_bgr, match_shoe_type_from_dataset
 from .vision_service import ShoeCategory, VisionResult
 
-_ORDER = ("casual", "leather", "sports")
+_ORDER = ("casual", "sports")
 
 
 @dataclass
@@ -35,13 +35,11 @@ class ShoeTypeClassification:
 
 def _vision_prior(category: ShoeCategory) -> dict[str, float]:
     """Soft distribution from edge/saturation heuristics (not a hard label)."""
-    if category == ShoeCategory.LEATHER:
-        return {"leather": 0.86, "casual": 0.10, "sports": 0.04}
     if category == ShoeCategory.SPORTS:
-        return {"sports": 0.76, "casual": 0.17, "leather": 0.07}
+        return {"sports": 0.82, "casual": 0.18}
     if category == ShoeCategory.CASUAL:
-        return {"casual": 0.80, "sports": 0.12, "leather": 0.08}
-    return {"casual": 0.50, "sports": 0.22, "leather": 0.28}
+        return {"casual": 0.82, "sports": 0.18}
+    return {"casual": 0.50, "sports": 0.50}
 
 
 def _catalog_prior(
@@ -50,9 +48,9 @@ def _catalog_prior(
     vision: VisionResult,
 ) -> dict[str, float]:
     tkey, _ = resolve_shoe_type(catalog_category, catalog_style, vision)
-    base = 0.12
+    base = 0.18
     out = {k: base for k in _ORDER}
-    out[tkey] = 0.76
+    out[tkey] = 0.82
     return out
 
 
@@ -60,7 +58,7 @@ def _normalize_hist_for_fusion(scores: dict[str, float]) -> dict[str, float]:
     """Map raw correl-like scores to [0,1] per type; missing refs → neutral."""
     active = {k: v for k, v in scores.items() if v >= 0.0}
     if not active:
-        return {k: 1.0 / 3.0 for k in _ORDER}
+        return {k: 1.0 / len(_ORDER) for k in _ORDER}
     if len(active) == 1:
         only = next(iter(active))
         return {k: 1.0 if k == only else 0.0 for k in _ORDER}
@@ -72,7 +70,7 @@ def _normalize_hist_for_fusion(scores: dict[str, float]) -> dict[str, float]:
     out: dict[str, float] = {}
     for k in _ORDER:
         if scores[k] < 0.0:
-            out[k] = 1.0 / 3.0
+            out[k] = 1.0 / len(_ORDER)
         else:
             out[k] = (scores[k] - lo) / rng
     return out
@@ -151,16 +149,11 @@ def classify_shoe_type(
     wh = float(fusion.get("weight_histogram", 0.38))
     wv = float(fusion.get("weight_vision", 0.47))
     wc = float(fusion.get("weight_catalog", 0.15))
-    # When OpenCV already says sports / leather / casual, trust vision over a misleading histogram
     extra_sv = float(fusion.get("extra_vision_weight_when_sports", 0.10))
-    extra_lv = float(fusion.get("extra_vision_weight_when_leather", 0.12))
     extra_cv = float(fusion.get("extra_vision_weight_when_casual", 0.12))
     if vision.category == ShoeCategory.SPORTS and bool(fusion.get("boost_when_vision_sports", True)):
         wv += extra_sv
         wh = max(0.08, wh - extra_sv)
-    elif vision.category == ShoeCategory.LEATHER and bool(fusion.get("boost_when_vision_leather", True)):
-        wv += extra_lv
-        wh = max(0.08, wh - extra_lv)
     elif vision.category == ShoeCategory.CASUAL and bool(fusion.get("boost_when_vision_casual", True)):
         wv += extra_cv
         wh = max(0.08, wh - extra_cv)
@@ -179,16 +172,11 @@ def classify_shoe_type(
 
     if vision.category == ShoeCategory.SPORTS:
         logits["sports"] += float(fusion.get("sports_logit_boost", 0.18))
-    elif vision.category == ShoeCategory.LEATHER:
-        logits["leather"] += float(fusion.get("leather_logit_boost", 0.2))
     elif vision.category == ShoeCategory.CASUAL:
         logits["casual"] += float(fusion.get("casual_logit_boost", 0.2))
 
-    # Histogram refs can look “sports”; when vision says dress/leather, do not let sports win easily.
     if vision.category == ShoeCategory.CASUAL:
         logits["sports"] -= float(fusion.get("penalize_sports_when_vision_casual", 0.12))
-    elif vision.category == ShoeCategory.LEATHER:
-        logits["sports"] -= float(fusion.get("penalize_sports_when_vision_leather", 0.1))
 
     temp = float(fusion.get("temperature", 0.5))
     probs = _softmax(logits, temp)
