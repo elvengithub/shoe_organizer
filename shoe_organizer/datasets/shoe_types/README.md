@@ -6,7 +6,11 @@ Add **several photos per type** from your cleaning bay (same camera angle and cr
 datasets/shoe_types/
   sports/    ← trainers, runners, mesh athletic shoes you want labeled “sports”
   casual/    ← smooth sneakers, canvas, minimal slip-ons you want labeled “casual”
+  sports/clean/  ← clean booth photos (used as refs when present; see `reference_subfolder` in config)
+  casual/clean/
 ```
+
+The repo root also has `datasets/shoe_types/` (mirror) so images show on GitHub at the top level; when you add files here, copy the same set to `../../datasets/shoe_types/` before pushing if you want both trees identical.
 
 With `vision.rule_based_pipeline: true` and `shoe_type_dataset.refine_rule_based_type: true` in `config.yaml`, the server:
 
