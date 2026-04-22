@@ -35,6 +35,7 @@ That installs Flask, OpenCV (headless), NumPy, Pillow, PyYAML, python-dotenv, py
 With the venv still activated, run from **this repository root** (the folder that contains `run.py` and the `shoe_organizer` subfolder):
 
 ```
+.venv\Scripts\activate
 python run.py
 ```
 

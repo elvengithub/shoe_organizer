@@ -49,10 +49,10 @@ camera:
 
 # Optional: crop + CLAHE before gate, catalog, and dirt heuristics (same as reference images).
 # roi: fractions of frame width/height (0–1). Omit or set null to use full frame.
-# Fractions of frame (0–1). Default ≈ centered shoe ~65% wide, slightly low in frame (typical bay camera).
+# Fractions of frame (0–1). Tighter crop = less wall/floor in dirt score (fewer false “deep wash” cues).
 # Set roi: null to disable cropping. Tweak x/y/w/h after you see the live view in the kiosk.
 vision_preprocess:
-  roi: { x: 0.15, y: 0.22, w: 0.70, h: 0.58 }
+  roi: { x: 0.20, y: 0.24, w: 0.60, h: 0.52 }
   clahe_enabled: true
   clahe_clip: 2.0
   clahe_tile: 8
@@ -65,6 +65,14 @@ shoe_gate:
   min_aspect_ratio: 1.1
   max_aspect_ratio: 7.5
   min_solidity: 0.32
+  bland_scene:
+    enabled: true
+    hard_max_laplacian_variance: 52
+    min_laplacian_variance: 118
+    min_edge_density: 0.026
+    min_gray_std_norm: 0.038
+    canny_low: 40
+    canny_high: 120
 
 # Optional ONNX shoe detector (same preprocessing idea as github.com/jmaloney95/Shoe-ObjectDetection-and-ImageClassification).
 # Copy your .onnx weights under models/ and set onnx_path. If disabled or file missing, classic contour gate above is used.
@@ -137,11 +145,12 @@ vision:
   rule_leather_saturation_max: 58
   rule_leather_brightness_v_max: 135
   rule_leather_edge_density_max: 0.12
-  dirt_ratio_clean_below: 0.05
-  dirt_ratio_moderate_below: 0.15
-  dirt_blend_ratio: 0.55
-  dirt_blend_std: 0.30
-  dirt_blend_noise: 0.15
+  dirt_ratio_clean_below: 0.10
+  dirt_ratio_moderate_below: 0.20
+  dirt_ratio_dirty_below: 0.33
+  dirt_blend_ratio: 0.68
+  dirt_blend_std: 0.22
+  dirt_blend_noise: 0.10
   dirt_hue_min: 8
   dirt_hue_max: 32
   dirt_sat_min: 20
@@ -202,11 +211,31 @@ vision:
   leather_like_rule_casual_boost: 0.26
   leather_like_rule_sports_scale: 0.42
   leather_like_rule_sole_contrast_penalty: 0.06
+  dirt_level:
+    enabled: true
+    clean_score_max: 0.24
+    clean_region_max: 0.004
+    dirty_score_min: 0.46
+    dirty_region_min: 0.006
+    very_dirty_score_min: 0.62
+    very_dirty_region_min: 0.012
+    edge_canny_low: 40
+    edge_canny_high: 120
+    edge_large_component_min_area_ratio: 0.0009
 
 wash:
-  hard_if_dirt_above: 0.35
-  sports_hard_if_dirt_above: 0.22
-  casual_hard_if_dirt_above: 0.28
+  # Lower gates = wash reacts sooner to the soil proxy (only this block tuned for wash sensitivity).
+  hard_if_dirt_above: 0.50
+  sports_hard_if_dirt_above: 0.40
+  casual_hard_if_dirt_above: 0.42
+  texture_discount:
+    sports: 0.16
+    casual: 0.12
+    leather: 0.09
+  use_dirt_level_if_available: true
+  skip_wash_effective_below: 0.13
+  allow_skip_wash_when_clean: true
+  gentle_only_effective_below: 0.30
 
 # Reference photos: put clean booth examples under datasets/shoe_types/casual/clean/ and
 # datasets/shoe_types/sports/clean/ (same ROI + lighting as live view). If clean/ has at
@@ -252,8 +281,9 @@ shoe_type_dataset:
     penalize_sports_when_vision_casual: 0.12
     penalize_sports_when_vision_leather: 0.1
     temperature: 0.5
-    # If fused confidence is below this, fall back to catalog+vision only (0 = disabled)
-    min_confidence: 0.0
+    # If fused confidence or top2 separation is weak, fall back to catalog+vision.
+    min_confidence: 0.52
+    min_top2_margin: 0.08
 
 # Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)
 # Histogram fusion: HSV 2D + gray + LAB a–b (after same preprocess as live frame).
@@ -261,7 +291,9 @@ shoe_type_dataset:
 shoe_catalog:
   enabled: true
   path: datasets/shoes
-  min_match_score: 0.36
+  min_match_score: 0.40
+  reject_if_ambiguous_below: 0.52
+  min_score_margin_when_weak: 0.035
   resize: 160
   hist_h_bins: 24
   hist_s_bins: 24

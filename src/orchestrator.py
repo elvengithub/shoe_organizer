@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .ai_camera import NO_CATALOG_MESSAGE, NOT_SHOE_MESSAGE, STABILIZING_MESSAGE, analyze_shoe_and_wash_from_bgr
+from .ai_camera import (
+    NO_CATALOG_MESSAGE,
+    NOT_SHOE_MESSAGE,
+    STABILIZING_MESSAGE,
+    analyze_shoe_and_wash_from_bgr,
+    infer_shoe_type_from_bgr_raw,
+)
+from .shoe_auto_dataset import maybe_autosave_shoe_type_sample
 from .classification_stability import ClassificationStability
 from .camera_mux import CameraMux
 from .config_loader import load_config
@@ -18,6 +25,16 @@ from .vision_service import ShoeCategory, VisionResult, WebcamCapture
 from .wash_decision import WashPlan, decide_wash, wash_ui_label
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class _ActiveRouting:
+    """Last intake assignment to a storage slot (for kiosk order status on slot cards)."""
+
+    slot: int
+    line: str
+    motion_error: bool = False
+    saw_occupied: bool = False
 
 
 @dataclass
@@ -50,6 +67,47 @@ class ShoeOrganizerOrchestrator:
         self._type_smoother = ShoeTypeSmoother(int(st_cfg.get("window", 5)))
         self._serial_bridge = SerialBridge(self.cfg)
         self._serial_bridge.start()
+        self._active_routing: _ActiveRouting | None = None
+
+    def _set_active_routing(
+        self,
+        slot: int,
+        wash: WashPlan,
+        shoe_category: str | None,
+        catalog_category: str | None,
+        catalog_style: str | None,
+        *,
+        motion_error: bool,
+    ) -> None:
+        st = shoe_category or "casual"
+        sl = SHOE_TYPE_LABELS.get(st, st.title())
+        label = format_shoe_display_name(st, sl, catalog_category, catalog_style)
+        wl = wash_ui_label(wash.mode, st)
+        self._active_routing = _ActiveRouting(
+            slot=int(slot),
+            line=f"{label} · {wl}",
+            motion_error=motion_error,
+            saw_occupied=False,
+        )
+
+    def _tick_active_routing(self) -> None:
+        if self._active_routing is None:
+            return
+        ar = self._active_routing
+        if self.sensors.occupancy_occupied(ar.slot):
+            ar.saw_occupied = True
+        elif ar.saw_occupied:
+            self._active_routing = None
+
+    def _order_status_for_slot(self, cid: int) -> str:
+        ar = self._active_routing
+        if ar is None or ar.slot != cid:
+            return "—"
+        if ar.motion_error:
+            return f"Motion error · {ar.line}"
+        if self.sensors.occupancy_occupied(cid):
+            return f"Stored · {ar.line}"
+        return f"Awaiting placement · {ar.line}"
 
     def _text_mode(self) -> bool:
         return str(self.cfg.get("presenter", {}).get("mode", "camera")).lower() == "text"
@@ -104,6 +162,7 @@ class ShoeOrganizerOrchestrator:
                 self.motion.goto_compartment_y_index(slot)
             except Exception as e:
                 log.exception("motion failed")
+                self._set_active_routing(slot, wash, shoe_cat, cc, cs, motion_error=True)
                 return CycleResult(
                     wash,
                     slot,
@@ -117,10 +176,11 @@ class ShoeOrganizerOrchestrator:
             for cid in self.cfg["compartments"]["storage_ids"]:
                 self.sensors.set_ventilation(cid, False)
             self.sensors.set_ventilation(slot, True)
+            self._set_active_routing(slot, wash, shoe_cat, cc, cs, motion_error=False)
             return CycleResult(
                 wash,
                 slot,
-                f"{wash.mode.upper()} wash; place into compartment {slot}; vent ON there only.",
+                f"{'No wash — shoe appears clean' if str(wash.mode).lower() == 'none' else wash.mode.upper() + ' wash'}; place into compartment {slot}; vent ON there only.",
                 dirt_score=d,
                 shoe_category=shoe_cat,
                 catalog_category=cc,
@@ -155,7 +215,7 @@ class ShoeOrganizerOrchestrator:
                 classification_error=det.get("classification_error"),
                 reject_detail=det.get("reject_detail"),
             )
-        if not det.get("raw_is_shoe", det.get("is_shoe", True)):
+        if not det.get("raw_is_shoe", det.get("is_shoe", False)):
             return CycleResult(
                 WashPlan("soft", "not a shoe"),
                 None,
@@ -167,7 +227,7 @@ class ShoeOrganizerOrchestrator:
                 classification_error=det.get("classification_error"),
                 reject_detail=det.get("reject_detail"),
             )
-        if det.get("raw_is_shoe", True) and not self._classification_stability.confirmed():
+        if det.get("raw_is_shoe", False) and not self._classification_stability.confirmed():
             return CycleResult(
                 WashPlan("soft", "stabilizing"),
                 None,
@@ -177,6 +237,9 @@ class ShoeOrganizerOrchestrator:
                 outcome="stabilizing",
             )
         if det.get("catalog_match") is False:
+            inf_type, bgr_p = infer_shoe_type_from_bgr_raw(frame, self.cfg)
+            if inf_type:
+                maybe_autosave_shoe_type_sample(frame, inf_type, self.cfg, bgr_preprocessed=bgr_p)
             return CycleResult(
                 WashPlan("soft", "catalog mismatch"),
                 None,
@@ -197,6 +260,7 @@ class ShoeOrganizerOrchestrator:
             csc = None
         slot = self.pick_free_storage_slot()
         if slot is None:
+            maybe_autosave_shoe_type_sample(frame, str(det.get("shoe_category") or "casual"), self.cfg)
             return CycleResult(
                 wash,
                 None,
@@ -211,6 +275,7 @@ class ShoeOrganizerOrchestrator:
             self.motion.goto_compartment_y_index(slot)
         except Exception as e:
             log.exception("motion failed")
+            self._set_active_routing(slot, wash, det.get("shoe_category"), cc, cs, motion_error=True)
             return CycleResult(
                 wash,
                 slot,
@@ -224,10 +289,13 @@ class ShoeOrganizerOrchestrator:
         for cid in self.cfg["compartments"]["storage_ids"]:
             self.sensors.set_ventilation(cid, False)
         self.sensors.set_ventilation(slot, True)
+        self._set_active_routing(slot, wash, det.get("shoe_category"), cc, cs, motion_error=False)
+        st_save = str(det.get("shoe_category") or "casual")
+        maybe_autosave_shoe_type_sample(frame, st_save, self.cfg)
         return CycleResult(
             wash,
             slot,
-            f"{wash.mode.upper()} wash; place into compartment {slot}; vent ON there only.",
+            f"{'No wash — shoe appears clean' if str(wash.mode).lower() == 'none' else wash.mode.upper() + ' wash'}; place into compartment {slot}; vent ON there only.",
             dirt_score=vision.dirt_score,
             shoe_category=det.get("shoe_category"),
             catalog_category=cc,
@@ -236,6 +304,7 @@ class ShoeOrganizerOrchestrator:
         )
 
     def climate_snapshot(self) -> dict:
+        self._tick_active_routing()
         out = {}
         for cid in self.cfg["compartments"]["storage_ids"]:
             r = self.sensors.read_climate(cid)
@@ -244,9 +313,68 @@ class ShoeOrganizerOrchestrator:
                 "humidity_pct": r.humidity_pct,
                 "occupied": self.sensors.occupancy_occupied(cid),
                 "vent_on": self.sensors.ventilation_on(cid),
+                "order_status": self._order_status_for_slot(int(cid)),
             }
         apply_to_climate_snapshot(out, self.cfg)
         return out
+
+    def esp32_actuator_snapshot(self) -> dict:
+        """
+        One-frame shoe presence for ESP32 pump/fan. Does not call classification stability
+        (avoids interfering with /api/camera/analyze state).
+        """
+        if self._text_mode():
+            return {
+                "ok": True,
+                "error": "presenter_text_mode",
+                "shoe_detected": False,
+                "shoe_clean": False,
+                "status": "idle",
+                "pump_on": False,
+                "fan_on": False,
+            }
+        frame = self.cam.read()
+        if frame is None:
+            src = str(self.cfg.get("camera", {}).get("source", "usb")).lower()
+            return {
+                "ok": False,
+                "error": "camera_unavailable",
+                "shoe_detected": False,
+                "shoe_clean": False,
+                "status": "idle",
+                "pump_on": False,
+                "fan_on": False,
+                "message": (
+                    "Waiting for ESP32 camera frame…"
+                    if src == "esp32"
+                    else "No camera frame — check USB or POST /api/camera/frame"
+                ),
+            }
+        _v, _w, detail = analyze_shoe_and_wash_from_bgr(frame)
+        if detail.get("reject_stage") == "pipeline_error":
+            return {
+                "ok": False,
+                "error": "analysis_failed",
+                "shoe_detected": False,
+                "shoe_clean": False,
+                "status": "idle",
+                "pump_on": False,
+                "fan_on": False,
+            }
+        raw = bool(detail.get("raw_is_shoe", detail.get("is_shoe", False)))
+        wash_mode = str(detail.get("wash_mode") or "").strip().lower()
+        shoe_clean = bool(raw and wash_mode == "none")
+        run_motors = bool(raw and not shoe_clean)
+        st = "clean" if shoe_clean else ("wash" if raw else "idle")
+        return {
+            "ok": True,
+            "error": None,
+            "shoe_detected": raw,
+            "shoe_clean": shoe_clean,
+            "status": st,
+            "pump_on": run_motors,
+            "fan_on": run_motors,
+        }
 
     def analyze_text_live(self, description: str) -> dict:
         """Same JSON shape as camera analyze, from free text only (no images)."""
@@ -295,7 +423,16 @@ class ShoeOrganizerOrchestrator:
             return {"ok": True, "error": "not_shoe", **detail}
         if detail.get("catalog_match") is False:
             self._type_smoother.clear()
-            return {"ok": True, "error": "no_catalog_match", **detail}
+            out = {**detail, "ok": True, "error": "no_catalog_match"}
+            inf_type, bgr_p = infer_shoe_type_from_bgr_raw(frame, self.cfg)
+            if inf_type:
+                out["inferred_shoe_category"] = inf_type
+                saved = maybe_autosave_shoe_type_sample(
+                    frame, inf_type, self.cfg, bgr_preprocessed=bgr_p
+                )
+                if saved:
+                    out["auto_dataset_saved"] = saved["relative_path"]
+            return out
         if stabilizing and raw:
             d2 = {**detail, "error": "stabilizing", "message": STABILIZING_MESSAGE}
             d2["shoe_category_raw"] = detail.get("shoe_category")
@@ -305,17 +442,32 @@ class ShoeOrganizerOrchestrator:
             d2["wash_mode"] = None
             d2["wash_label"] = None
             d2["wash_reason"] = None
+            d2["wash_effective_soil"] = None
+            d2["wash_raw_soil"] = None
+            d2["dirt_level"] = None
+            d2["dirty_region_ratio"] = None
             d2["object_classification"] = None
             return {"ok": True, **d2}
         raw_cat = str(detail.get("shoe_category") or "casual")
         smooth_cat = self._type_smoother.update(raw_cat)
         detail["shoe_category_raw"] = raw_cat
         detail["shoe_category"] = smooth_cat
-        vis = VisionResult(dirt_score=float(detail["dirt_score"]), category=ShoeCategory.CASUAL)
+        vis = VisionResult(
+            dirt_score=float(detail["dirt_score"]),
+            category=ShoeCategory.CASUAL,
+            dirt_level=str(detail.get("dirt_level")) if detail.get("dirt_level") is not None else None,
+            dirty_region_ratio=(
+                float(detail["dirty_region_ratio"]) if detail.get("dirty_region_ratio") is not None else None
+            ),
+        )
         wplan = decide_wash(vis, smooth_cat)
         detail["wash_mode"] = wplan.mode
         detail["wash_label"] = wash_ui_label(wplan.mode, smooth_cat)
         detail["wash_reason"] = wplan.reason
+        if wplan.effective_soil is not None:
+            detail["wash_effective_soil"] = round(float(wplan.effective_soil), 4)
+        if wplan.raw_soil is not None:
+            detail["wash_raw_soil"] = round(float(wplan.raw_soil), 4)
         ts = SHOE_TYPE_LABELS[smooth_cat]
         detail["shoe_type_short"] = ts
         detail["shoe_type_label"] = format_shoe_display_name(
@@ -326,4 +478,7 @@ class ShoeOrganizerOrchestrator:
         if isinstance(scores, dict) and smooth_cat in scores:
             v = scores[smooth_cat]
             detail["shoe_type_dataset_score"] = round(float(v), 4) if float(v) >= 0.0 else None
+        saved = maybe_autosave_shoe_type_sample(frame, smooth_cat, self.cfg)
+        if saved:
+            detail["auto_dataset_saved"] = saved["relative_path"]
         return {"ok": True, "error": None, **detail}

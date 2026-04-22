@@ -202,21 +202,29 @@ def match_against_catalog(
 
     entries = _load_gallery(cfg)
     if not entries:
-        log.warning("shoe catalog empty — skipping match requirement")
-        return CatalogMatch(True, None, None, 1.0)
+        log.warning("shoe catalog empty — cannot verify a shoe match")
+        return CatalogMatch(False, None, None, 0.0)
 
     if not already_preprocessed:
         bgr = apply_vision_preprocess(bgr, cfg)
     q_h, q_g, q_l = _compute_hists(bgr, sc)
-    best: tuple[float, _GalleryEntry | None] = (-1.0, None)
+    scored: list[tuple[float, _GalleryEntry]] = []
     for e in entries:
         s = _hist_score(q_h, q_g, q_l, e.h_hist, e.g_hist, e.lab_hist, sc)
-        if s > best[0]:
-            best = (s, e)
+        scored.append((s, e))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    best_score, ent = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else -1.0
 
     thr = float(sc.get("min_match_score", 0.38))
-    score, ent = best
-    if ent is None or score < thr:
-        return CatalogMatch(False, None, None, float(score))
+    if ent is None or best_score < thr:
+        return CatalogMatch(False, None, None, float(best_score))
 
-    return CatalogMatch(True, ent.category, ent.style, float(score))
+    weak_cap = float(sc.get("reject_if_ambiguous_below", 0.52))
+    min_margin = float(sc.get("min_score_margin_when_weak", 0.035))
+    if len(scored) >= 2 and second_score >= 0.0 and best_score < weak_cap:
+        if (best_score - second_score) < min_margin:
+            return CatalogMatch(False, None, None, float(best_score))
+
+    return CatalogMatch(True, ent.category, ent.style, float(best_score))

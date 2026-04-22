@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -26,6 +28,8 @@ class VisionResult:
     dirt_score: float
     category: ShoeCategory
     frame_bgr: np.ndarray | None = None
+    dirt_level: str | None = None
+    dirty_region_ratio: float | None = None
 
 
 @dataclass
@@ -85,12 +89,107 @@ def evaluate_shoe_gate(bgr: np.ndarray, cfg: dict | None = None) -> ShoeGateResu
     return ShoeGateResult(True, "ok")
 
 
+def evaluate_bland_scene(bgr: np.ndarray, cfg: dict | None = None) -> tuple[bool, str, dict[str, float]]:
+    """
+    Reject empty bay / blank wall: the Otsu silhouette gate often passes on smooth floors
+    or uniform panels, which are not faces (anti-face does not fire) and are not shoes.
+
+    Uses Laplacian variance (focus / fine texture), Canny edge density, and gray contrast.
+    Tune under ``shoe_gate.bland_scene`` in config.
+    """
+    cfg = cfg or load_config()
+    sg = cfg.get("shoe_gate", {})
+    bs = sg.get("bland_scene") or {}
+    if not bool(bs.get("enabled", True)):
+        return False, "", {}
+
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    lap = cv2.Laplacian(blur, cv2.CV_64F)
+    lap_var = float(lap.var())
+
+    lo = int(bs.get("canny_low", 40))
+    hi = int(bs.get("canny_high", 120))
+    edges = cv2.Canny(blur, lo, hi)
+    edge_d = float(np.mean(edges > 0))
+
+    gstd = float(np.std(gray)) / 255.0
+
+    dbg: dict[str, float] = {
+        "scene_laplacian_variance": round(lap_var, 4),
+        "scene_edge_density": round(edge_d, 5),
+        "scene_gray_std_norm": round(gstd, 5),
+    }
+
+    # Extremely smooth ROI (out-of-focus wall, bare plastic, etc.)
+    hard_lap = float(bs.get("hard_max_laplacian_variance", 52.0))
+    if lap_var <= hard_lap:
+        return True, "bland_scene_ultra_flat", dbg
+
+    min_lv = float(bs.get("min_laplacian_variance", 118.0))
+    min_ed = float(bs.get("min_edge_density", 0.026))
+    min_std = float(bs.get("min_gray_std_norm", 0.038))
+    if lap_var < min_lv and edge_d < min_ed and gstd < min_std:
+        return True, "bland_scene", dbg
+
+    return False, "", dbg
+
+
 def _dirt_score(gray: np.ndarray) -> float:
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 40, 120)
     edge_density = float(np.mean(edges > 0))
     std = float(np.std(gray)) / 255.0
     return min(1.0, 0.5 * edge_density + 0.5 * std)
+
+
+def _dirt_score_and_level(gray: np.ndarray, cfg: dict | None = None) -> tuple[float, str | None, float]:
+    """
+    Dirt proxy from texture + contrast, with a large-region guard to avoid treating knit texture
+    as heavy soil. Returns (score_0_to_1, dirt_level, dirty_region_ratio).
+    """
+    cfg = cfg or load_config()
+    dl_cfg = (cfg.get("vision", {}) or {}).get("dirt_level") or {}
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    lo = int(dl_cfg.get("edge_canny_low", 40))
+    hi = int(dl_cfg.get("edge_canny_high", 120))
+    edges = cv2.Canny(blur, lo, hi)
+    edge_density = float(np.mean(edges > 0))
+    std = float(np.std(gray)) / 255.0
+
+    h, w = gray.shape[:2]
+    frame_area = float(max(1, h * w))
+    min_area_r = float(dl_cfg.get("edge_large_component_min_area_ratio", 0.0009))
+    min_area = max(16, int(frame_area * min_area_r))
+    n_lbl, _lbl, stats, _cent = cv2.connectedComponentsWithStats(edges, connectivity=8)
+    large_area = 0
+    for i in range(1, int(n_lbl)):
+        a = int(stats[i, cv2.CC_STAT_AREA])
+        if a >= min_area:
+            large_area += a
+    large_region = float(large_area) / frame_area
+
+    raw = 0.28 * edge_density + 0.34 * std + 0.38 * min(1.0, large_region * 6.0)
+    score = float(max(0.0, min(1.0, raw)))
+
+    if not bool(dl_cfg.get("enabled", True)):
+        return score, None, large_region
+
+    clean_max = float(dl_cfg.get("clean_score_max", 0.24))
+    clean_region_max = float(dl_cfg.get("clean_region_max", 0.004))
+    dirty_min = float(dl_cfg.get("dirty_score_min", 0.46))
+    dirty_region_min = float(dl_cfg.get("dirty_region_min", 0.006))
+    vdirty_min = float(dl_cfg.get("very_dirty_score_min", 0.62))
+    vdirty_region_min = float(dl_cfg.get("very_dirty_region_min", 0.012))
+
+    if score >= vdirty_min and large_region >= vdirty_region_min:
+        return score, "very_dirty", large_region
+    if score >= dirty_min and large_region >= dirty_region_min:
+        return score, "dirty", large_region
+    if score <= clean_max and large_region <= clean_region_max:
+        return score, "clean", large_region
+    return score, "moderate", large_region
 
 
 def _category_heuristic(bgr: np.ndarray) -> ShoeCategory:
@@ -307,11 +406,24 @@ def blank_jpeg_bytes(width: int = 640, height: int = 480) -> bytes:
     return buf.tobytes() if ok else b""
 
 
-def analyze_frame(bgr: np.ndarray) -> VisionResult:
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    d = _dirt_score(gray)
+def analyze_frame(bgr: np.ndarray, bgr_for_dirt: np.ndarray | None = None) -> VisionResult:
+    """
+    ``bgr`` is used for category heuristics (expects CLAHE-normalized booth frame when enabled).
+    ``bgr_for_dirt`` optional: same ROI without CLAHE so Canny/std dirt proxy is not inflated
+    by local contrast boost (otherwise many textures read as “deep wash”).
+    """
+    cfg = load_config()
+    src_dirt = bgr if bgr_for_dirt is None else bgr_for_dirt
+    gray_d = cv2.cvtColor(src_dirt, cv2.COLOR_BGR2GRAY)
+    d, dl, dirty_r = _dirt_score_and_level(gray_d, cfg)
     cat = _category_heuristic(bgr)
-    return VisionResult(dirt_score=d, category=cat, frame_bgr=bgr)
+    return VisionResult(
+        dirt_score=d,
+        category=cat,
+        frame_bgr=bgr,
+        dirt_level=dl,
+        dirty_region_ratio=dirty_r,
+    )
 
 
 class WebcamCapture:
@@ -323,22 +435,74 @@ class WebcamCapture:
         self.h = int(c["height"])
         self._cap: cv2.VideoCapture | None = None
         self._lock = threading.Lock()
+        self._last_fail_log = 0.0
+        self._last_reopen = 0.0
+
+    def _new_capture(self) -> cv2.VideoCapture:
+        c = self.cfg.get("camera", {})
+        raw = c.get("opencv_capture_api")
+        if raw is not None and str(raw).strip():
+            api = getattr(cv2, str(raw).strip(), None)
+            if api is None:
+                try:
+                    api = int(raw)
+                except (TypeError, ValueError):
+                    api = None
+            if api is not None:
+                return cv2.VideoCapture(self.index, api)
+        if sys.platform == "win32":
+            # MSMF default is flaky for many USB webcams; DirectShow is more reliable.
+            return cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
+        return cv2.VideoCapture(self.index)
 
     def open(self) -> None:
-        self._cap = cv2.VideoCapture(self.index)
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        self._cap = self._new_capture()
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.w)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.h)
+        if not self._cap.isOpened():
+            log.error("webcam failed to open (index=%s) — try camera.index in config.yaml", self.index)
+            self._cap.release()
+            self._cap = None
 
     def read(self) -> np.ndarray | None:
         with self._lock:
-            if self._cap is None:
+            if self._cap is None or not self._cap.isOpened():
                 self.open()
-            assert self._cap is not None
-            ok, frame = self._cap.read()
-            if not ok or frame is None:
-                log.error("webcam read failed")
+            if self._cap is None or not self._cap.isOpened():
+                self._throttled_read_fail("webcam not opened")
                 return None
-            return frame
+
+            def _grab() -> tuple[bool, np.ndarray | None]:
+                assert self._cap is not None
+                return self._cap.read()
+
+            ok, frame = _grab()
+            if ok and frame is not None:
+                return frame
+            # Some drivers return one bad frame; retry without reopening.
+            ok2, frame2 = _grab()
+            if ok2 and frame2 is not None:
+                return frame2
+            # Avoid reopening at stream rate (e.g. MJPEG ~12 Hz) — at most ~1 Hz.
+            now = time.monotonic()
+            if now - self._last_reopen >= 1.0:
+                self._last_reopen = now
+                self.open()
+                if self._cap is not None and self._cap.isOpened():
+                    ok3, frame3 = _grab()
+                    if ok3 and frame3 is not None:
+                        return frame3
+            self._throttled_read_fail("webcam read failed")
+            return None
+
+    def _throttled_read_fail(self, msg: str, interval_s: float = 5.0) -> None:
+        now = time.monotonic()
+        if now - self._last_fail_log >= interval_s:
+            self._last_fail_log = now
+            log.error("%s", msg)
 
     def release(self) -> None:
         with self._lock:

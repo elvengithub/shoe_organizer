@@ -101,6 +101,51 @@ def evaluate_shoe_gate(bgr: np.ndarray, cfg: dict | None = None) -> ShoeGateResu
     return ShoeGateResult(True, "ok")
 
 
+def evaluate_bland_scene(bgr: np.ndarray, cfg: dict | None = None) -> tuple[bool, str, dict[str, float]]:
+    """
+    Reject empty bay / blank wall: the Otsu silhouette gate often passes on smooth floors
+    or uniform panels, which are not faces (anti-face does not fire) and are not shoes.
+
+    Uses Laplacian variance (focus / fine texture), Canny edge density, and gray contrast.
+    Tune under ``shoe_gate.bland_scene`` in config.
+    """
+    cfg = cfg or load_config()
+    sg = cfg.get("shoe_gate", {})
+    bs = sg.get("bland_scene") or {}
+    if not bool(bs.get("enabled", True)):
+        return False, "", {}
+
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    lap = cv2.Laplacian(blur, cv2.CV_64F)
+    lap_var = float(lap.var())
+
+    lo = int(bs.get("canny_low", 40))
+    hi = int(bs.get("canny_high", 120))
+    edges = cv2.Canny(blur, lo, hi)
+    edge_d = float(np.mean(edges > 0))
+
+    gstd = float(np.std(gray)) / 255.0
+
+    dbg: dict[str, float] = {
+        "scene_laplacian_variance": round(lap_var, 4),
+        "scene_edge_density": round(edge_d, 5),
+        "scene_gray_std_norm": round(gstd, 5),
+    }
+
+    hard_lap = float(bs.get("hard_max_laplacian_variance", 52.0))
+    if lap_var <= hard_lap:
+        return True, "bland_scene_ultra_flat", dbg
+
+    min_lv = float(bs.get("min_laplacian_variance", 118.0))
+    min_ed = float(bs.get("min_edge_density", 0.026))
+    min_std = float(bs.get("min_gray_std_norm", 0.038))
+    if lap_var < min_lv and edge_d < min_ed and gstd < min_std:
+        return True, "bland_scene", dbg
+
+    return False, "", dbg
+
+
 def _dirt_score(gray: np.ndarray) -> float:
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 40, 120)
@@ -119,10 +164,17 @@ def compute_edge_density(bgr: np.ndarray) -> float:
 
 def _rule_dirt_level_and_score(bgr: np.ndarray, cfg: dict) -> tuple[float, str, float]:
     """
-    Dirt from brown/dark-ish pixels + grayscale variance (no ML).
-    Returns (dirt_score 0..1, dirt_level, dirty_pixel_ratio).
+    Dirt from brown/dark-ish pixels + grayscale variance on shoe pixels only (no ML).
+    Returns (dirt_score 0..1, dirt_level, dirty_pixel_ratio_on_shoe).
     """
     vm = cfg.get("vision", {})
+    mask = _segment_shoe_mask(bgr)
+    shoe_mask = mask > 0
+    shoe_px = int(np.sum(shoe_mask))
+    if shoe_px < 150:
+        shoe_mask = np.ones(bgr.shape[:2], dtype=bool)
+        shoe_px = int(np.sum(shoe_mask))
+
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     h = hsv[:, :, 0].astype(np.int16)
@@ -141,28 +193,33 @@ def _rule_dirt_level_and_score(bgr: np.ndarray, cfg: dict) -> tuple[float, str, 
     s_any = int(vm.get("dirt_dark_sat_min", 15))
     dark = (v <= v_dark_max) & (s >= s_any)
 
-    dirty_mask = brown | dark
-    ratio = float(np.mean(dirty_mask))
-    std_norm = float(np.std(gray)) / 255.0
+    dirty_mask = (brown | dark) & shoe_mask
+    ratio = float(np.sum(dirty_mask)) / max(float(shoe_px), 1.0)
+    std_norm = float(np.std(gray[shoe_mask])) / 255.0 if shoe_px > 0 else float(np.std(gray)) / 255.0
     lap = cv2.Laplacian(gray, cv2.CV_64F)
-    noise = float(np.std(lap)) / 64.0
-    w_r = float(vm.get("dirt_blend_ratio", 0.55))
-    w_std = float(vm.get("dirt_blend_std", 0.30))
-    w_n = float(vm.get("dirt_blend_noise", 0.15))
-    combined = w_r * ratio + w_std * std_norm + w_n * min(1.0, noise)
+    noise = float(np.std(lap[shoe_mask])) / 64.0 if shoe_px > 0 else float(np.std(lap)) / 64.0
+    w_r = float(vm.get("dirt_blend_ratio", 0.68))
+    w_std = float(vm.get("dirt_blend_std", 0.22))
+    w_n = float(vm.get("dirt_blend_noise", 0.10))
+    combined = max(0.0, min(1.0, w_r * ratio + w_std * std_norm + w_n * min(1.0, noise)))
 
-    thr_clean = float(vm.get("dirt_ratio_clean_below", 0.05))
-    thr_mod = float(vm.get("dirt_ratio_moderate_below", 0.15))
+    thr_clean = float(vm.get("dirt_ratio_clean_below", 0.10))
+    thr_mod = float(vm.get("dirt_ratio_moderate_below", 0.20))
+    thr_dirty = float(vm.get("dirt_ratio_dirty_below", 0.33))
     if combined < thr_clean:
         level = "clean"
-        score = 0.08 + 0.12 * (combined / max(thr_clean, 1e-6))
+        score = 0.06 + 0.10 * (combined / max(thr_clean, 1e-6))
     elif combined < thr_mod:
         level = "moderate"
         t = (combined - thr_clean) / max(thr_mod - thr_clean, 1e-6)
-        score = 0.20 + 0.18 * t
+        score = 0.18 + 0.18 * t
+    elif combined < thr_dirty:
+        level = "dirty"
+        t = (combined - thr_mod) / max(thr_dirty - thr_mod, 1e-6)
+        score = 0.36 + 0.18 * t
     else:
         level = "very_dirty"
-        score = min(1.0, 0.42 + 0.58 * min(1.0, (combined - thr_mod) / max(1.0 - thr_mod, 1e-6)))
+        score = min(1.0, 0.56 + 0.44 * min(1.0, (combined - thr_dirty) / max(1.0 - thr_dirty, 1e-6)))
 
     return float(score), level, ratio
 

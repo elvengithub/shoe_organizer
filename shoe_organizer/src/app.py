@@ -238,6 +238,14 @@ def create_app() -> Flask:
         """
         return jsonify({"ok": True, "service": "shoe_organizer"})
 
+    @app.get("/api/esp32/actuators")
+    def esp32_actuators():
+        """
+        ESP32 poll: when the bay camera sees a shoe, pump_on and fan_on are true (same Wi‑Fi / LAN as SERVER_BASE).
+        Trusted LAN only — no secret (same policy as /api/esp32/ping).
+        """
+        return jsonify(orch().esp32_actuator_snapshot())
+
     @app.post("/api/esp32/telemetry")
     def esp32_telemetry_post():
         """

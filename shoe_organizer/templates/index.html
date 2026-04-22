@@ -260,20 +260,10 @@
           <p>RH: ${row.humidity_pct ?? "—"} %</p>
           ${dist}${odor}${risk}${bio}
           <p class="${row.occupied ? "occ" : "free"}">${row.occupied ? "Occupied" : "Free"}</p>
-          <label class="vent"><input type="checkbox" data-cid="${id}" ${row.vent_on ? "checked" : ""} /> Vent</label>
+          <p class="order-status"><span class="order-status-k">Order</span> ${esc(String(row.order_status ?? "—"))}</p>
         `;
         gridEl.appendChild(card);
       }
-      gridEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
-        cb.addEventListener("change", async () => {
-          const cid = parseInt(cb.dataset.cid, 10);
-          await fetch("/api/vent", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ compartment: cid, on: cb.checked }),
-          });
-        });
-      });
     }
 
     refreshStatus();

@@ -192,16 +192,23 @@ def classify_shoe_type(
 
     temp = float(fusion.get("temperature", 0.5))
     probs = _softmax(logits, temp)
-    winner = max(probs, key=probs.get)
-    conf = float(probs[winner])
+    ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+    winner, best_p = ranked[0]
+    conf = float(best_p)
+    second_p = float(ranked[1][1]) if len(ranked) > 1 else 0.0
+    margin_p = conf - second_p
 
     min_conf = float(fusion.get("min_confidence", 0.0))
-    if min_conf > 0 and conf < min_conf:
+    min_margin = float(fusion.get("min_top2_margin", 0.0))
+    if (min_conf > 0 and conf < min_conf) or (min_margin > 0 and margin_p < min_margin):
         tkey, _ = resolve_shoe_type(catalog_category, catalog_style, vision)
         winner = tkey
         conf = 1.0
         probs = {k: 0.0 for k in _ORDER}
         probs[tkey] = 1.0
+        fb_name = "opencv_catalog_histogram_fallback"
+        if min_margin > 0 and margin_p < min_margin:
+            fb_name = "opencv_catalog_histogram_ambiguous"
         return ShoeTypeClassification(
             shoe_type=winner,
             confidence=conf,
@@ -209,7 +216,7 @@ def classify_shoe_type(
             hist_scores=hist_raw,
             vision_prior={k: round(float(v_dist[k]), 4) for k in _ORDER},
             catalog_prior={k: round(float(c_dist[k]), 4) for k in _ORDER},
-            backend="opencv_catalog_histogram_fallback",
+            backend=fb_name,
         )
 
     return ShoeTypeClassification(

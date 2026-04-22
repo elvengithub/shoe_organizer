@@ -9,7 +9,7 @@ from typing import Any
 from .anti_face import reject_if_face_or_skin
 from .config_loader import load_config
 from .not_shoe_gallery import max_not_shoe_similarity
-from .vision_service import evaluate_shoe_gate
+from .vision_service import evaluate_bland_scene, evaluate_shoe_gate
 
 
 def _root() -> Path:
@@ -19,7 +19,7 @@ def _root() -> Path:
 def raw_shoe_acceptance(bgr_preprocessed, cfg: dict | None = None) -> tuple[bool, str, dict[str, Any]]:
     """
     Returns (accept_as_shoe, stage_code, debug_dict).
-    stage_code: ok | gate | anti_face | binary | negative_template
+    stage_code: ok | gate | bland_scene | anti_face | binary | negative_template
     """
     cfg = cfg or load_config()
     dbg: dict[str, Any] = {}
@@ -28,6 +28,12 @@ def raw_shoe_acceptance(bgr_preprocessed, cfg: dict | None = None) -> tuple[bool
     dbg["gate_reason"] = gate.reason
     if not gate.is_shoe:
         return False, "gate", dbg
+
+    bland, bland_reason, bland_dbg = evaluate_bland_scene(bgr_preprocessed, cfg)
+    dbg.update(bland_dbg)
+    if bland:
+        dbg["bland_scene_reason"] = bland_reason
+        return False, "bland_scene", dbg
 
     af_reject, af_reason, af_dbg = reject_if_face_or_skin(bgr_preprocessed, cfg)
     dbg.update(af_dbg)

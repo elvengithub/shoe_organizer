@@ -411,13 +411,17 @@ header h1 {
   font-weight: 500;
 }
 
-.vent {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-  font-size: 1rem;
-  cursor: pointer;
+.card .order-status {
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.card .order-status-k {
+  font-weight: 700;
+  color: var(--text);
+  margin-right: 0.25rem;
 }
 
 .hint {

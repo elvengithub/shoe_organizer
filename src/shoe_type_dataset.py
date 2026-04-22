@@ -70,7 +70,8 @@ def _hist_cfg(cfg: dict) -> dict:
 
 def _load_type_galleries(cfg: dict) -> dict[str, list[tuple[np.ndarray, np.ndarray, np.ndarray]]]:
     global _gallery_cache, _cache_key
-    root = _project_root() / str(cfg.get("shoe_type_dataset", {}).get("path", "datasets/shoe_types"))
+    block = cfg.get("shoe_type_dataset", {})
+    root = _project_root() / str(block.get("path", "datasets/shoe_types"))
     key = (_tree_mtime(root), _config_mtime())
     if _gallery_cache is not None and _cache_key == key:
         return _gallery_cache
@@ -83,6 +84,8 @@ def _load_type_galleries(cfg: dict) -> dict[str, list[tuple[np.ndarray, np.ndarr
         _cache_key = key
         return out
 
+    ref_sub = str(block.get("reference_subfolder", "")).strip().strip("/\\")
+
     for sub in sorted(root.iterdir()):
         if not sub.is_dir():
             continue
@@ -90,7 +93,14 @@ def _load_type_galleries(cfg: dict) -> dict[str, list[tuple[np.ndarray, np.ndarr
         if tkey not in _ALLOWED_TYPES:
             log.debug("skip unknown shoe_types folder: %s", sub.name)
             continue
-        for path in sorted(sub.rglob("*")):
+        scan_root = sub
+        if ref_sub:
+            preferred = sub / ref_sub
+            if preferred.is_dir():
+                has_refs = any(p.is_file() and p.suffix.lower() in _EXT for p in preferred.rglob("*"))
+                if has_refs:
+                    scan_root = preferred
+        for path in sorted(scan_root.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in _EXT:
                 continue
             bgr = _read_bgr(path)

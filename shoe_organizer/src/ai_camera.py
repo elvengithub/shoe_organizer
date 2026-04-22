@@ -30,6 +30,7 @@ STABILIZING_MESSAGE = "Hold steady — confirming shoe…"
 # Stable codes for clients / error trapping (not_shoe path)
 NOT_SHOE_STAGE_CODES: dict[str, str] = {
     "gate": "NOT_SHOE_GATE",
+    "bland_scene": "NOT_SHOE_BLAND_SCENE",
     "anti_face": "NOT_SHOE_FACE_OR_SKIN",
     "binary": "NOT_SHOE_MODEL_REJECT",
     "negative_template": "NOT_SHOE_TEMPLATE_MATCH",
@@ -37,6 +38,7 @@ NOT_SHOE_STAGE_CODES: dict[str, str] = {
 
 NOT_SHOE_STAGE_HINTS: dict[str, str] = {
     "gate": "No shoe-like object detected — place a shoe in the cleaning bay.",
+    "bland_scene": "No shoe in view — the bay looks empty or too uniform; place footwear in the cleaning bay.",
     "anti_face": "Looks like a face or skin; aim the camera at footwear only.",
     "binary": "Shoe classifier scored this as not a shoe.",
     "negative_template": "Too similar to saved non-shoe examples.",
@@ -89,7 +91,17 @@ def _detail_not_shoe(gate_reason: str, reject_stage: str = "gate", dbg: dict[str
         "gate_reason": gate_reason,
     }
     if dbg:
-        for k in ("tflite_p_shoe", "max_not_shoe_score", "anti_face_reason", "skin_pixel_ratio", "haar_face_area_ratio"):
+        for k in (
+            "tflite_p_shoe",
+            "max_not_shoe_score",
+            "anti_face_reason",
+            "skin_pixel_ratio",
+            "haar_face_area_ratio",
+            "scene_laplacian_variance",
+            "scene_edge_density",
+            "scene_gray_std_norm",
+            "bland_scene_reason",
+        ):
             if k in dbg:
                 d[k] = dbg[k]
     return d
@@ -150,7 +162,8 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
     ok, stage, dbg = raw_shoe_acceptance(bgr, cfg)
     if not ok:
         _maybe_save_reject(bgr, cfg, stage)
-        return None, None, _detail_not_shoe(dbg.get("gate_reason", stage), stage, dbg)
+        gr = dbg.get("bland_scene_reason") or dbg.get("gate_reason") or stage
+        return None, None, _detail_not_shoe(str(gr), stage, dbg)
 
     gate_reason = str(dbg.get("gate_reason", "ok"))
 

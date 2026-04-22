@@ -22,40 +22,86 @@ class WashPlan:
     reason: str
 
 
+def _effective_soil(d_raw: float, shoe_type: str, w: dict) -> float:
+    st = _normalize_shoe_type(shoe_type)
+    disc = (w.get("texture_discount") or {}).get(st)
+    if disc is None:
+        disc = float((w.get("texture_discount") or {}).get("casual", 0.06))
+    else:
+        disc = float(disc)
+    return max(0.0, min(1.0, float(d_raw) - disc))
+
+
 def _decide_wash_rule_based(vision: VisionResult, shoe_type: str, cfg: dict) -> WashPlan:
-    """User spec: very_dirty → deep (hard); sports + moderate → hard; else soft."""
+    """Rule-based dirt_level: only clearly soiled frames get deep wash."""
+    w = cfg.get("wash", {})
     dl = (vision.dirt_level or "clean").lower()
     st = _normalize_shoe_type(shoe_type)
+    d_raw = float(vision.dirt_score)
+    d = _effective_soil(d_raw, st, w)
+
     if dl == "very_dirty":
         return WashPlan(
             "hard",
-            "Deep clean - very dirty (edge + color rules).",
+            "Heavy soiling detected — deep wash recommended.",
         )
-    if st == "sports" and dl == "moderate":
+
+    skip_thr = float(w.get("skip_wash_effective_below", 0.11))
+    if bool(w.get("allow_skip_wash_when_clean", True)) and dl == "clean" and d <= skip_thr:
         return WashPlan(
-            "hard",
-            "Hard wash - sports shoe with moderate soil (rule-based).",
+            "none",
+            "Shoe appears clean — no wash cycle recommended.",
         )
+
+    if dl == "clean":
+        return WashPlan(
+            "soft",
+            "Shoe appears clean — gentle wash only; no deep clean.",
+        )
+
+    if dl == "dirty":
+        return WashPlan(
+            "soft",
+            "Visible soil detected, but not severe — gentle wash recommended.",
+        )
+
     return WashPlan(
         "soft",
-        "Soft wash - light soil or material-safe cycle (rule-based).",
+        "Light soil signal — gentle wash recommended (no deep clean).",
     )
 
 
 def decide_wash(vision: VisionResult, shoe_type: str = "casual") -> WashPlan:
     """
     shoe_type: casual | sports (two-way; legacy \"leather\" treated as casual).
-    Chooses hard vs soft from soil score + material class.
+    Chooses hard | soft | none from soil-like score + material class.
     """
     cfg = load_config()
+    w = cfg.get("wash", {})
     if bool(cfg.get("vision", {}).get("rule_based_pipeline", False)) and vision.dirt_level:
         return _decide_wash_rule_based(vision, shoe_type, cfg)
-    w = cfg.get("wash", {})
-    hard_thr = float(w.get("hard_if_dirt_above", 0.35))
-    sport_push = float(w.get("sports_hard_if_dirt_above", 0.22))
-    casual_push = float(w.get("casual_hard_if_dirt_above", 0.28))
+
+    hard_thr = float(w.get("hard_if_dirt_above", 0.40))
+    sport_push = float(w.get("sports_hard_if_dirt_above", 0.32))
+    casual_push = float(w.get("casual_hard_if_dirt_above", 0.34))
     st = _normalize_shoe_type(shoe_type)
-    d = float(vision.dirt_score)
+
+    d_raw = float(vision.dirt_score)
+    d = _effective_soil(d_raw, st, w)
+
+    skip_thr = float(w.get("skip_wash_effective_below", 0.11))
+    if bool(w.get("allow_skip_wash_when_clean", True)) and d <= skip_thr:
+        return WashPlan(
+            "none",
+            f"Very low soil signal ({d:.2f}) — shoe appears clean; no wash cycle recommended.",
+        )
+
+    gentle_thr = float(w.get("gentle_only_effective_below", 0.22))
+    if d < gentle_thr:
+        return WashPlan(
+            "soft",
+            f"Low soil signal ({d:.2f}) — shoe appears clean; gentle wash only, no deep clean.",
+        )
 
     if d >= hard_thr:
         return WashPlan(
@@ -67,7 +113,7 @@ def decide_wash(vision: VisionResult, shoe_type: str = "casual") -> WashPlan:
         if d >= sport_push:
             return WashPlan(
                 "hard",
-                f"Sports shoe — mesh/textiles with visible soil ({d:.2f}); deeper clean",
+                f"Sports shoe — elevated soil signal ({d:.2f}); deeper clean",
             )
         return WashPlan(
             "soft",
@@ -77,7 +123,7 @@ def decide_wash(vision: VisionResult, shoe_type: str = "casual") -> WashPlan:
         if d >= casual_push:
             return WashPlan(
                 "hard",
-                f"Casual shoe — moderate soil ({d:.2f}); stronger wash",
+                f"Casual shoe — elevated soil signal ({d:.2f}); stronger wash",
             )
         return WashPlan(
             "soft",
@@ -90,8 +136,10 @@ def decide_wash(vision: VisionResult, shoe_type: str = "casual") -> WashPlan:
 
 
 def wash_ui_label(mode: str, shoe_type: str) -> str:
-    labels = {"casual": "Casual", "sports": "Sports"}
+    labels = {"casual": "Casual", "sports": "Sports", "leather": "Leather"}
     st = labels.get(_normalize_shoe_type(shoe_type), "Casual")
     if mode == "hard":
         return f"Deep wash ({st})"
+    if mode == "none":
+        return f"No wash ({st})"
     return f"Gentle wash ({st})"

@@ -49,10 +49,10 @@ camera:
 
 # Optional: crop + CLAHE before gate, catalog, and dirt heuristics (same as reference images).
 # roi: fractions of frame width/height (0–1). Omit or set null to use full frame.
-# Fractions of frame (0–1). Default ≈ centered shoe ~65% wide, slightly low in frame (typical bay camera).
+# Fractions of frame (0–1). Tighter crop = less wall/floor in dirt score (fewer false “deep wash” cues).
 # Set roi: null to disable cropping. Tweak x/y/w/h after you see the live view in the kiosk.
 vision_preprocess:
-  roi: { x: 0.15, y: 0.22, w: 0.70, h: 0.58 }
+  roi: { x: 0.20, y: 0.24, w: 0.60, h: 0.52 }
   clahe_enabled: true
   clahe_clip: 2.0
   clahe_tile: 8
@@ -65,6 +65,15 @@ shoe_gate:
   min_aspect_ratio: 1.1
   max_aspect_ratio: 7.5
   min_solidity: 0.32
+  # After the silhouette gate: reject empty / uniform bays (no face → anti-face idle).
+  bland_scene:
+    enabled: true
+    hard_max_laplacian_variance: 52
+    min_laplacian_variance: 118
+    min_edge_density: 0.026
+    min_gray_std_norm: 0.038
+    canny_low: 40
+    canny_high: 120
 
 # Optional ONNX shoe detector (jmaloney95/Shoe-ObjectDetection-and-ImageClassification–style). See shoe_onnx_gate.py.
 shoe_object_detection:
@@ -206,11 +215,37 @@ vision:
   # Gray knit: very high gradient + low saturation (above leather grain, below old loose OR-sat rule)
   sports_mesh_low_sat_gradient_min: 0.148
   sports_mesh_low_sat_min: 18
+  # Dirt-level bins used by wash_decision (clean/moderate/dirty/very_dirty).
+  dirt_level:
+    enabled: true
+    clean_score_max: 0.24
+    clean_region_max: 0.004
+    dirty_score_min: 0.46
+    dirty_region_min: 0.006
+    very_dirty_score_min: 0.62
+    very_dirty_region_min: 0.012
+    edge_canny_low: 40
+    edge_canny_high: 120
+    edge_large_component_min_area_ratio: 0.0009
 
 wash:
-  hard_if_dirt_above: 0.35
-  sports_hard_if_dirt_above: 0.22
-  casual_hard_if_dirt_above: 0.28
+  # Deep wash when effective soil crosses these. Lower = wash tiers react sooner (more sensitive to proxy).
+  # Texture discounts unchanged — identification / type settings are separate (see shoe_type_dataset).
+  hard_if_dirt_above: 0.50
+  sports_hard_if_dirt_above: 0.40
+  casual_hard_if_dirt_above: 0.42
+  # Subtract from raw dirt_score by type so mesh/knit texture is not read as mud.
+  texture_discount:
+    sports: 0.16
+    casual: 0.12
+    leather: 0.09
+  # Prefer dirt-level bins from vision when available (clean/moderate/dirty/very_dirty).
+  use_dirt_level_if_available: true
+  # Effective soil at or below → UI "No wash" (no deep / gentle agitation recommended).
+  skip_wash_effective_below: 0.13
+  allow_skip_wash_when_clean: true
+  # Below this (but above skip): always gentle, never deep wash.
+  gentle_only_effective_below: 0.30
 
 # Three-way type ID: put reference photos under datasets/shoe_types/{sports,casual,leather}/
 # Same preprocess + histograms as shoe_catalog. If a type wins above min_match_score (and margin),
@@ -219,6 +254,8 @@ shoe_type_dataset:
   enabled: true
   path: datasets/shoe_types
   refine_rule_based_type: true
+  # If this subfolder exists and has images for a type, only those refs are used (ignores noisy auto captures).
+  reference_subfolder: clean
   # Legacy single-signal gate (used when fusion.enabled is false)
   min_match_score: 0.32
   min_margin: 0.015
@@ -243,8 +280,21 @@ shoe_type_dataset:
     penalize_sports_when_vision_casual: 0.12
     penalize_sports_when_vision_leather: 0.1
     temperature: 0.5
-    # If fused confidence is below this, fall back to catalog+vision only (0 = disabled)
-    min_confidence: 0.0
+    # If fused confidence or top2 separation is weak, fall back to catalog+vision.
+    min_confidence: 0.52
+    min_top2_margin: 0.08
+
+# While the kiosk camera runs: save preprocessed shoe frames into shoe_type_dataset folders
+# under ``<subdir>/`` (default auto_capture) so the type histogram matcher learns from real bay views.
+# two_class_only: only ``sports`` and ``casual`` directories on disk (leather samples go to casual).
+auto_shoe_dataset:
+  enabled: true
+  two_class_only: true
+  min_interval_seconds: 12.0
+  duplicate_frame_ttl_seconds: 20.0
+  subdir: auto_capture
+  max_files_per_folder: 3000
+  jpeg_quality: 88
 
 # Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)
 # Histogram fusion: HSV 2D + gray + LAB a–b (after same preprocess as live frame).
@@ -252,7 +302,11 @@ shoe_type_dataset:
 shoe_catalog:
   enabled: true
   path: datasets/shoes
-  min_match_score: 0.36
+  min_match_score: 0.40
+  # If the best histogram score is below this and the runner-up is almost as high, treat as no match
+  # (reduces “casual shoe” on an empty bay). Tune with your gallery size and lighting.
+  reject_if_ambiguous_below: 0.52
+  min_score_margin_when_weak: 0.035
   resize: 160
   hist_h_bins: 24
   hist_s_bins: 24
