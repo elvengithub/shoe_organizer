@@ -1,0 +1,12 @@
+{
+  "class_names": [
+    "sneaker",
+    "boot",
+    "sandal",
+    "loafer",
+    "other"
+  ],
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "val_acc": 1.0
+}

@@ -1,7 +1,52 @@
+# Virtual environments
 .venv/
+.venv-train/
+venv/
+env/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.Python
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Env / secrets
 .env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Project: captured rejects & large model binaries
 datasets/captured_rejects/*.jpg
 datasets/captured_rejects/*.jpeg
+shoe_organizer/datasets/captured_rejects/*.jpg
+shoe_organizer/datasets/captured_rejects/*.jpeg
+
+# TFLite / PyTorch weights (regenerate or download locally; keep .gitkeep)
 models/*.tflite
+shoe_organizer/models/*.pt
+shoe_organizer/models/*.onnx
+!shoe_organizer/models/.gitkeep
+
+# Training images: keep repo small; add your own locally after clone
+shoe_organizer/datasets/shoe_types/**/*.jpg
+shoe_organizer/datasets/shoe_types/**/*.jpeg
+shoe_organizer/datasets/shoe_types/**/*.png
+shoe_organizer/datasets/shoe_types/**/*.webp
+shoe_organizer/dataset/**/*.jpg
+shoe_organizer/dataset/**/*.jpeg
+shoe_organizer/dataset/**/*.png
+shoe_organizer/dataset/**/*.webp
+datasets/shoe_types/**/*.jpg
+datasets/shoe_types/**/*.jpeg
+datasets/shoe_types/**/*.png
+datasets/shoe_types/**/*.webp

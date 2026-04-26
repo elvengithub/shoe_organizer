@@ -12,6 +12,14 @@ SHOE_TYPE_LABELS: dict[str, str] = {
 }
 
 
+def pretty_dataset_class_name(raw: str | None) -> str:
+    """Turn ``folder_name`` or ``nike_air_max`` into a short UI label."""
+    if not raw:
+        return ""
+    s = str(raw).strip().replace("_", " ").replace("-", " ")
+    return s.title() if s else ""
+
+
 def resolve_shoe_type(
     catalog_category: str | None,
     catalog_style: str | None,
@@ -70,3 +78,28 @@ def format_shoe_display_name(
     if catalog_style:
         return f"{type_label} — {catalog_style}"
     return type_label
+
+
+def format_neural_shoe_label(
+    bucket_key: str,
+    bucket_label: str,
+    fine_dataset_class: str | None,
+    *,
+    catalog_category: str | None = None,
+    catalog_style: str | None = None,
+    dataset_class_first: bool = True,
+) -> str:
+    """
+    Camera line when the type head predicts a class that matches ``dataset/type/<name>/``.
+
+    If ``dataset_class_first``, show that name first (your "brand" / style line), then bucket.
+    """
+    pretty = pretty_dataset_class_name(fine_dataset_class)
+    cat_line = format_shoe_display_name(bucket_key, bucket_label, catalog_category, catalog_style)
+    if not pretty:
+        return cat_line
+    if dataset_class_first:
+        if catalog_style and catalog_category:
+            return f"{pretty} — {bucket_label} ({catalog_style})"
+        return f"{pretty} — {bucket_label}"
+    return f"{cat_line} — {pretty}"

@@ -33,12 +33,18 @@ class ShoeTypeClassification:
     backend: str
 
 
-def _vision_prior(category: ShoeCategory) -> dict[str, float]:
-    """Soft distribution from edge/saturation heuristics (not a hard label)."""
+def _vision_prior(category: ShoeCategory, cfg: dict | None = None) -> dict[str, float]:
+    """Soft distribution from OpenCV heuristics (tune fusion.vision_prior_peak — lower = less 'always sports')."""
+    peak = 0.70
+    if cfg is not None:
+        fu = (cfg.get("shoe_type_dataset") or {}).get("fusion") or {}
+        if fu.get("vision_prior_peak") is not None:
+            peak = max(0.51, min(0.95, float(fu["vision_prior_peak"])))
+    w = 1.0 - peak
     if category == ShoeCategory.SPORTS:
-        return {"sports": 0.82, "casual": 0.18}
+        return {"sports": peak, "casual": w}
     if category == ShoeCategory.CASUAL:
-        return {"casual": 0.82, "sports": 0.18}
+        return {"casual": peak, "sports": w}
     return {"casual": 0.50, "sports": 0.50}
 
 
@@ -104,7 +110,7 @@ def classify_shoe_type(
             confidence=1.0,
             fused_probs=probs,
             hist_scores={k: -1.0 for k in _ORDER},
-            vision_prior=_vision_prior(vision.category),
+            vision_prior=_vision_prior(vision.category, cfg),
             catalog_prior=_catalog_prior(catalog_category, catalog_style, vision),
             backend="opencv_catalog_histogram",
         )
@@ -129,7 +135,7 @@ def classify_shoe_type(
                 confidence=1.0,
                 fused_probs=probs,
                 hist_scores=td.scores_by_type,
-                vision_prior=_vision_prior(vision.category),
+                vision_prior=_vision_prior(vision.category, cfg),
                 catalog_prior=_catalog_prior(catalog_category, catalog_style, vision),
                 backend="opencv_type_dataset",
             )
@@ -141,7 +147,7 @@ def classify_shoe_type(
             confidence=1.0,
             fused_probs=probs,
             hist_scores=hist_raw,
-            vision_prior=_vision_prior(vision.category),
+            vision_prior=_vision_prior(vision.category, cfg),
             catalog_prior=_catalog_prior(catalog_category, catalog_style, vision),
             backend="opencv_catalog_histogram",
         )
@@ -163,12 +169,22 @@ def classify_shoe_type(
     wh, wv, wc = wh / ws, wv / ws, wc / ws
 
     h_norm = _normalize_hist_for_fusion(hist_raw)
-    v_dist = _vision_prior(vision.category)
+    v_dist = _vision_prior(vision.category, cfg)
     c_dist = _catalog_prior(catalog_category, catalog_style, vision)
 
     logits: dict[str, float] = {}
     for k in _ORDER:
         logits[k] = wh * h_norm[k] + wv * v_dist[k] + wc * c_dist[k]
+
+    # When reference histograms favor one class, nudge away from the other (symmetric, tunable).
+    gap_c = h_norm.get("casual", 0.0) - h_norm.get("sports", 0.0)
+    min_gc = float(fusion.get("hist_prefers_casual_min_gap", 0.0))
+    if min_gc > 0.0 and gap_c >= min_gc:
+        logits["sports"] -= float(fusion.get("penalize_sports_when_hist_prefers_casual", 0.0))
+    gap_s = h_norm.get("sports", 0.0) - h_norm.get("casual", 0.0)
+    min_gs = float(fusion.get("hist_prefers_sports_min_gap", 0.0))
+    if min_gs > 0.0 and gap_s >= min_gs:
+        logits["casual"] -= float(fusion.get("penalize_casual_when_hist_prefers_sports", 0.0))
 
     if vision.category == ShoeCategory.SPORTS:
         logits["sports"] += float(fusion.get("sports_logit_boost", 0.18))

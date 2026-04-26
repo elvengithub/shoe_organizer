@@ -1,0 +1,6 @@
+# PC / Jetson / CUDA hosts: two-stage YOLO + PyTorch classifiers (see config ai_pipeline)
+# pip install -r requirements.txt -r requirements-ai.txt
+torch>=2.1.0
+torchvision>=0.16.0
+ultralytics>=8.1.0
+albumentations>=1.4.0

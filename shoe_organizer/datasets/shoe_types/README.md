@@ -10,14 +10,10 @@ datasets/shoe_types/
   casual/clean/
 ```
 
-The repo root also has `datasets/shoe_types/` (mirror) so images show on GitHub at the top level; when you add files here, copy the same set to `../../datasets/shoe_types/` before pushing if you want both trees identical.
+Image files are **not** tracked in git (see root `.gitignore`); add them locally after clone.
 
-With `vision.rule_based_pipeline: true` and `shoe_type_dataset.refine_rule_based_type: true` in `config.yaml`, the server:
+With `vision.rule_based_pipeline: true` and `shoe_type_dataset.refine_rule_based_type: true` in `config.yaml`, the server fuses OpenCV cues with histogram matches to your reference folders.
 
-1. Computes **fusion** cues on the live frame (edges, texture, saturation).
-2. Compares the frame to your **sports** and **casual** folders (HSV + gray + LAB histograms, same as the main shoe catalog).
-3. If the histogram match passes `min_match_score` and `min_margin`, that **overrides** the fusion label for the final sports/casual decision.
-
-If a folder is **empty**, that type is ignored. If the match is not confident enough, the answer stays **fusion-only** (see API `shoe_type_dataset_scores` and `inference_backend`).
+If a folder is **empty**, that type is ignored for matching.
 
 A legacy `leather/` folder, if present, is treated as extra **casual** references.

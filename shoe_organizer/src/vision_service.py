@@ -26,6 +26,12 @@ class VisionResult:
     dirt_score: float
     category: ShoeCategory
     frame_bgr: np.ndarray | None = None
+    # Optional: two-stage PyTorch pipeline (YOLO + separate classifiers)
+    fine_shoe_type: str | None = None
+    shoe_type_confidence: float | None = None
+    cleanliness_confidence: float | None = None
+    detector_box_xyxy: tuple[float, float, float, float] | None = None
+    detector_confidence: float | None = None
     # Rule-based pipeline (OpenCV only)
     dirt_level: str | None = None  # clean | moderate | very_dirty
     edge_density: float | None = None
@@ -695,9 +701,25 @@ def classify_shoe_type_rule_based(bgr: np.ndarray, cfg: dict) -> tuple[ShoeCateg
     elif cv_val <= 4.0 and sm < 0.10:
         casual_score += 0.05
 
-    # Bright white areas (midsole foam, stripes) common in athletic shoes
+    # Optional: extra "minimal palette / slim" casual nudges (off by default — were forcing all-casual on many cams)
+    _casual_strength = bool(vm.get("casual_strength_rules_enabled", False))
+    if not _casual_strength:
+        mp_flag = False
+    else:
+        mpm = float(vm.get("casual_minimal_palette_max_variety", 4.2))
+        smm = float(vm.get("casual_minimal_palette_max_sat", 0.28))
+        trainer_multicolor = (cv_val >= 7.0 and sm >= 0.20) or (cv_val >= 5.0 and sm >= 0.15)
+        mp_flag = bool(cv_val <= mpm and sm < smm) and not trainer_multicolor
+        if mp_flag:
+            casual_score += float(vm.get("casual_minimal_palette_boost", 0.12))
+            sports_score *= float(vm.get("casual_minimal_palette_sports_dampen", 0.78))
+
+    # Bright white areas: usually athletic, but all-white 1-2 color casuals still have bright soles
+    white_add = 0.06
     if br >= 0.25:
-        sports_score += 0.06
+        if bool(vm.get("casual_soft_bright_sole_on_minimal_palette", True)) and mp_flag:
+            white_add = float(vm.get("casual_bright_sole_sports_add_when_minimal_palette", 0.02))
+        sports_score += white_add
     elif br < 0.05:
         casual_score += 0.04
 
@@ -725,6 +747,23 @@ def classify_shoe_type_rule_based(bgr: np.ndarray, cfg: dict) -> tuple[ShoeCateg
     if cb >= 0.12:
         sports_score += 0.04
 
+    # Slim-casual silhouette boost (only when casual_strength_rules_enabled)
+    if not _casual_strength:
+        slim_flag = False
+    else:
+        stn_max = float(vm.get("casual_slim_sole_thickness_max", 0.20))
+        wv_max = float(vm.get("casual_slim_width_variation_max", 0.24))
+        nd_max = float(vm.get("casual_slim_defects_max", 12.0))
+        cv_slim = float(vm.get("casual_slim_max_color_variety", 4.5))
+        chunky_trainer_shape = wv >= 0.30 or float(nd) >= 15.0 or cb >= 0.12
+        slim_flag = (
+            bool(st < stn_max and wv < wv_max and float(nd) < nd_max and cv_val <= cv_slim)
+            and not chunky_trainer_shape
+        )
+        if slim_flag:
+            casual_score += float(vm.get("casual_slim_silhouette_boost", 0.10))
+            sports_score = max(0.0, sports_score - float(vm.get("casual_slim_sports_penalty", 0.08)))
+
     # ===== 5. TEXTURE (lowest weight — dirt-sensitive) =====
     ed = edge_tex["edge_density"]
     gm = edge_tex["gradient_mean"]
@@ -746,9 +785,13 @@ def classify_shoe_type_rule_based(bgr: np.ndarray, cfg: dict) -> tuple[ShoeCateg
         # Chunky-sole heuristics are misleading on leather oxfords; dampen them.
         sports_score -= float(vm.get("leather_like_rule_sole_contrast_penalty", 0.06))
 
-    # Final fusion
+    # Final fusion (0..1). Optional sports_fusion_casual_bias nudges USB booth frames toward casual
+    # when sole-brightness + edge rules over-trigger "sports".
     raw_diff = sports_score - casual_score
     fusion = max(0.0, min(1.0, 0.5 + raw_diff))
+    casual_bias = float(vm.get("sports_fusion_casual_bias", 0.0))
+    if casual_bias > 0.0:
+        fusion = max(0.0, fusion - casual_bias)
 
     thr = float(vm.get("sports_fusion_threshold", 0.52))
     cat = ShoeCategory.SPORTS if fusion >= thr else ShoeCategory.CASUAL
@@ -781,6 +824,8 @@ def classify_shoe_type_rule_based(bgr: np.ndarray, cfg: dict) -> tuple[ShoeCateg
         "sports_evidence": sports_score,
         "casual_evidence": casual_score,
         "leather_like_casual": 1.0 if leather_like else 0.0,
+        "minimal_palette_casual": 1.0 if mp_flag else 0.0,
+        "slim_silhouette_casual": 1.0 if slim_flag else 0.0,
     }
 
     log.debug(

@@ -1,0 +1,9 @@
+{
+  "class_names": [
+    "clean",
+    "dirty"
+  ],
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "val_acc": 0.5263157894736842
+}

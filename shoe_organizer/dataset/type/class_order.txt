@@ -1,0 +1,7 @@
+# One folder name per line (must match subfolders of dataset/type/). Training order = this order.
+# Rename folders to your "brands" or styles (e.g. nike_runner, dress_boot); add matching lines here.
+sneaker
+boot
+sandal
+loafer
+other

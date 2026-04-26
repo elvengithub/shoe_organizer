@@ -14,7 +14,12 @@ import numpy as np
 from .config_loader import load_config
 from .shoe_catalog import match_against_catalog
 from .shoe_decision import raw_shoe_acceptance
-from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name
+from .shoe_taxonomy import (
+    SHOE_TYPE_LABELS,
+    format_neural_shoe_label,
+    format_shoe_display_name,
+    pretty_dataset_class_name,
+)
 from .shoe_type_classifier import classification_to_api_dict, classify_shoe_type
 from .shoe_type_dataset import match_shoe_type_from_dataset
 from .vision_preprocess import apply_vision_preprocess
@@ -45,6 +50,19 @@ NOT_SHOE_STAGE_HINTS: dict[str, str] = {
 }
 
 PIPELINE_ERROR_CODE = "ANALYSIS_PIPELINE_ERROR"
+
+
+def _try_neural_two_stage(bgr: np.ndarray, cfg: dict) -> tuple[VisionResult | None, dict[str, Any]]:
+    """YOLOv8 + dual PyTorch heads; returns (None, {}) when disabled or on import/weight failure."""
+    if not bool((cfg.get("ai_pipeline") or {}).get("enabled")):
+        return None, {}
+    try:
+        from .two_stage_vision import infer_two_stage
+
+        return infer_two_stage(bgr, cfg)
+    except ImportError as e:
+        log.warning("ai_pipeline enabled but dependencies missing: %s", e)
+        return None, {"ai_pipeline_error": str(e)}
 
 
 def _project_root() -> Path:
@@ -166,32 +184,149 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
         return None, None, _detail_not_shoe(str(gr), stage, dbg)
 
     gate_reason = str(dbg.get("gate_reason", "ok"))
+    neural_vision, neural_dbg = _try_neural_two_stage(bgr, cfg)
 
     if bool(cfg.get("vision", {}).get("rule_based_pipeline", False)):
+        if neural_vision is not None:
+            vision = neural_vision
+            shoe_type = str(neural_dbg.get("shoe_category_bucket") or "casual")
+            if shoe_type not in ("sports", "casual"):
+                shoe_type = "casual"
+            wash = decide_wash(vision, shoe_type)
+            type_short = SHOE_TYPE_LABELS[shoe_type]
+            ap_pipe = cfg.get("ai_pipeline") or {}
+            ds_ui = ap_pipe.get("dataset") or {}
+            dataset_first = bool(ds_ui.get("show_dataset_class_in_ui", True))
+            fine_raw = neural_dbg.get("fine_shoe_type")
+            fine_s = str(fine_raw) if fine_raw is not None else None
+            shoe_type_label = format_neural_shoe_label(
+                shoe_type,
+                type_short,
+                fine_s,
+                catalog_category=None,
+                catalog_style=None,
+                dataset_class_first=dataset_first,
+            )
+            wash_label = wash_ui_label(wash.mode, shoe_type)
+            vm = cfg.get("vision", {})
+            thr_edge = float(vm.get("sports_edge_density_min", 0.09))
+            probs = neural_dbg.get("shoe_type_probs") or {}
+            detail = {
+                "is_shoe": True,
+                "raw_is_shoe": True,
+                "reject_stage": None,
+                "catalog_match": True,
+                "object_classification": f"shoe_{shoe_type}",
+                "classification_error": None,
+                "reject_detail": "",
+                "shoe_category": shoe_type,
+                "shoe_type_label": shoe_type_label,
+                "shoe_type_short": type_short,
+                "dirt_score": round(float(vision.dirt_score), 4),
+                "dirt_level": vision.dirt_level,
+                "edge_density": None,
+                "sports_edge_density_min": round(thr_edge, 4),
+                "sports_fusion_score": None,
+                "sports_fusion_threshold": None,
+                "gradient_mean": None,
+                "texture_rms": None,
+                "saturation_mean": None,
+                "dirty_pixel_ratio": round(float(vision.dirty_pixel_ratio), 4)
+                if vision.dirty_pixel_ratio is not None
+                else None,
+                "wash_mode": wash.mode,
+                "wash_label": wash_label,
+                "wash_reason": wash.reason,
+                "inference_backend": "yolov8_torch_two_stage",
+                "gate_reason": gate_reason,
+                "catalog_category": None,
+                "catalog_style": None,
+                "catalog_score": None,
+                "shoe_type_dataset_matched": bool(probs),
+                "shoe_type_dataset_score": (
+                    round(float(probs.get(fine_s, 0.0)), 4) if probs and fine_s else None
+                ),
+                "shoe_type_dataset_scores": {k: round(float(v), 4) for k, v in probs.items()}
+                if probs
+                else {},
+                "leather_like_casual": None,
+                "shoe_dataset_class": fine_s,
+                "shoe_dataset_style": pretty_dataset_class_name(fine_s) if fine_s else None,
+                "fine_shoe_type": neural_dbg.get("fine_shoe_type"),
+                "shoe_type_confidence": neural_dbg.get("shoe_type_confidence"),
+                "cleanliness_label": neural_dbg.get("cleanliness_label"),
+                "cleanliness_probs": neural_dbg.get("cleanliness_probs"),
+                "shoe_type_probs": probs,
+                "detector_box_xyxy": list(vision.detector_box_xyxy) if vision.detector_box_xyxy else None,
+                "detector_confidence": round(float(vision.detector_confidence), 4)
+                if vision.detector_confidence is not None
+                else None,
+                "inference_ms": neural_dbg.get("inference_ms"),
+            }
+            if "tflite_p_shoe" in dbg:
+                detail["tflite_p_shoe"] = dbg["tflite_p_shoe"]
+            return vision, wash, detail
+
         vision = analyze_frame(bgr, cfg)
         std = cfg.get("shoe_type_dataset", {}) or {}
+        fu = std.get("fusion") or {}
+        use_fusion_refine = (
+            bool(std.get("refine_rule_based_type", False))
+            and bool(fu.get("enabled", True))
+            and bool(std.get("enabled", True))
+        )
         td_match = None
-        if bool(std.get("enabled", True)):
+        tcls = None
+        if use_fusion_refine:
             try:
-                td_match = match_shoe_type_from_dataset(bgr, cfg, already_preprocessed=True)
+                tcls = classify_shoe_type(bgr, cfg, vision, None, None)
             except Exception as e:
-                log.warning("shoe_type_dataset match failed (using vision only): %s", e)
+                log.warning("classify_shoe_type failed (falling back to dataset/vision): %s", e)
+                tcls = None
+            if tcls is not None:
+                shoe_type = tcls.shoe_type
+                vision = replace(
+                    vision,
+                    category=ShoeCategory.SPORTS if shoe_type == "sports" else ShoeCategory.CASUAL,
+                )
+                log.info(
+                    "shoe type from HIST+VISION fusion: %s conf=%.3f hist=%s backend=%s",
+                    shoe_type,
+                    tcls.confidence,
+                    tcls.hist_scores,
+                    tcls.backend,
+                )
+
+        if not use_fusion_refine or tcls is None:
+            if bool(std.get("enabled", True)):
+                try:
+                    td_match = match_shoe_type_from_dataset(bgr, cfg, already_preprocessed=True)
+                except Exception as e:
+                    log.warning("shoe_type_dataset match failed (using vision only): %s", e)
+                    td_match = None
+            else:
                 td_match = None
 
-        # Dataset histogram match is the PRIMARY classifier (most accurate).
-        # Vision rule-based fusion is the FALLBACK when dataset has no confident match.
-        if td_match is not None and td_match.matched and td_match.shoe_type:
-            shoe_type = td_match.shoe_type
-            vision = replace(
-                vision,
-                category=ShoeCategory.SPORTS if shoe_type == "sports" else ShoeCategory.CASUAL,
-            )
-            log.info("shoe type from DATASET match: %s (score=%.3f, scores=%s)",
-                     shoe_type, td_match.score, td_match.scores_by_type)
-        else:
-            shoe_type = vision.category.value
-            log.info("shoe type from VISION rules (no dataset match): %s (fusion=%.3f)",
-                     shoe_type, vision.sports_fusion_score or 0.0)
+            # Dataset-only path: histogram wins if confident; else vision rules.
+            if td_match is not None and td_match.matched and td_match.shoe_type:
+                shoe_type = td_match.shoe_type
+                vision = replace(
+                    vision,
+                    category=ShoeCategory.SPORTS if shoe_type == "sports" else ShoeCategory.CASUAL,
+                )
+                log.info(
+                    "shoe type from DATASET match: %s (score=%.3f, scores=%s)",
+                    shoe_type,
+                    td_match.score,
+                    td_match.scores_by_type,
+                )
+            else:
+                shoe_type = vision.category.value
+                log.info(
+                    "shoe type from VISION rules (no dataset match): %s (fusion=%.3f)",
+                    shoe_type,
+                    vision.sports_fusion_score or 0.0,
+                )
         wash = decide_wash(vision, shoe_type)
         type_short = SHOE_TYPE_LABELS[shoe_type]
         shoe_type_label = format_shoe_display_name(shoe_type, type_short, None, None)
@@ -199,7 +334,9 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
         vm = cfg.get("vision", {})
         thr_edge = float(vm.get("sports_edge_density_min", 0.09))
         backend = "opencv_rules"
-        if td_match is not None:
+        if use_fusion_refine and tcls is not None:
+            backend = f"rule_pipeline_{tcls.backend}"
+        elif td_match is not None:
             if td_match.matched:
                 backend = "opencv_rules_plus_shoe_types_dataset"
             elif any(v >= 0.0 for v in td_match.scores_by_type.values()):
@@ -252,6 +389,14 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
             if vision.leather_like_casual is not None
             else None,
         }
+        if use_fusion_refine and tcls is not None:
+            detail.update(classification_to_api_dict(tcls))
+            detail["shoe_type_dataset_matched"] = tcls.backend == "opencv_type_fusion"
+            _hs = tcls.hist_scores.get(shoe_type, -1.0)
+            detail["shoe_type_dataset_score"] = round(float(_hs), 4) if _hs >= 0.0 else None
+            detail["shoe_type_dataset_scores"] = {
+                k: round(float(v), 4) for k, v in tcls.hist_scores.items()
+            }
         if "tflite_p_shoe" in dbg:
             detail["tflite_p_shoe"] = dbg["tflite_p_shoe"]
         return vision, wash, detail
@@ -259,6 +404,77 @@ def _analyze_shoe_and_wash_from_bgr_impl(bgr: np.ndarray) -> tuple[VisionResult 
     cm = match_against_catalog(bgr, cfg, already_preprocessed=True)
     if not cm.matched:
         return None, None, _detail_no_catalog(cm.score, gate_reason)
+
+    if neural_vision is not None:
+        vision = neural_vision
+        shoe_type = str(neural_dbg.get("shoe_category_bucket") or "casual")
+        if shoe_type not in ("sports", "casual"):
+            shoe_type = "casual"
+        type_short = SHOE_TYPE_LABELS[shoe_type]
+        wash = decide_wash(vision, shoe_type)
+        ap_pipe = cfg.get("ai_pipeline") or {}
+        ds_ui = ap_pipe.get("dataset") or {}
+        dataset_first = bool(ds_ui.get("show_dataset_class_in_ui", True))
+        fine_raw = neural_dbg.get("fine_shoe_type")
+        fine_s = str(fine_raw) if fine_raw is not None else None
+        shoe_type_label = format_neural_shoe_label(
+            shoe_type,
+            type_short,
+            fine_s,
+            catalog_category=cm.category,
+            catalog_style=cm.style,
+            dataset_class_first=dataset_first,
+        )
+        wash_label = wash_ui_label(wash.mode, shoe_type)
+        probs = neural_dbg.get("shoe_type_probs") or {}
+        st_conf = neural_dbg.get("shoe_type_confidence")
+        detail = {
+            "is_shoe": True,
+            "raw_is_shoe": True,
+            "reject_stage": None,
+            "catalog_match": True,
+            "object_classification": f"shoe_{shoe_type}",
+            "classification_error": None,
+            "reject_detail": "",
+            "shoe_category": shoe_type,
+            "shoe_type_label": shoe_type_label,
+            "shoe_type_short": type_short,
+            "dirt_score": round(float(vision.dirt_score), 4),
+            "dirt_level": vision.dirt_level,
+            "wash_mode": wash.mode,
+            "wash_label": wash_label,
+            "wash_reason": wash.reason,
+            "inference_backend": "yolov8_torch_two_stage",
+            "gate_reason": gate_reason,
+            "catalog_category": cm.category,
+            "catalog_style": cm.style,
+            "catalog_score": round(float(cm.score), 4),
+            "shoe_type_fusion_probs": probs,
+            "shoe_type_fusion_confidence": st_conf,
+            "shoe_type_vision_prior": None,
+            "shoe_type_catalog_prior": None,
+            "shoe_type_dataset_matched": bool(probs),
+            "shoe_type_dataset_score": (
+                round(float(probs.get(fine_s, 0.0)), 4) if probs and fine_s else None
+            ),
+            "shoe_type_dataset_scores": {k: round(float(v), 4) for k, v in probs.items()}
+            if probs
+            else {},
+            "shoe_dataset_class": fine_s,
+            "shoe_dataset_style": pretty_dataset_class_name(fine_s) if fine_s else None,
+            "fine_shoe_type": neural_dbg.get("fine_shoe_type"),
+            "cleanliness_label": neural_dbg.get("cleanliness_label"),
+            "cleanliness_probs": neural_dbg.get("cleanliness_probs"),
+            "shoe_type_probs": probs,
+            "detector_box_xyxy": list(vision.detector_box_xyxy) if vision.detector_box_xyxy else None,
+            "detector_confidence": round(float(vision.detector_confidence), 4)
+            if vision.detector_confidence is not None
+            else None,
+            "inference_ms": neural_dbg.get("inference_ms"),
+        }
+        if "tflite_p_shoe" in dbg:
+            detail["tflite_p_shoe"] = dbg["tflite_p_shoe"]
+        return vision, wash, detail
 
     vision = analyze_frame(bgr)
     tcls = classify_shoe_type(bgr, cfg, vision, cm.category, cm.style)

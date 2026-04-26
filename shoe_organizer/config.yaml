@@ -132,6 +132,58 @@ server:
   host: 0.0.0.0
   port: 8080
 
+# Two-stage AI pipeline (YOLOv8 crop + separate PyTorch classifiers). Off by default — enable when
+# weights exist under models/ (shoe_detector.pt, shoe_type_classifier.pt, cleanliness_classifier.pt).
+# Requires: pip install -r requirements-ai.txt
+ai_pipeline:
+  enabled: true
+  # Classify the full preprocessed ROI (no YOLO crop) until you train a shoe-specific detector.
+  prefer_full_roi: true
+  # Normalize every captured frame to this size before detection (width, height)
+  capture_normalize: [640, 480]
+  detector:
+    weights: models/shoe_detector.pt
+    confidence: 0.35
+    iou: 0.45
+    imgsz: 416
+    # If true and YOLO finds no box, use the full preprocessed ROI as the crop (keeps legacy behavior)
+    use_full_frame_if_no_detection: true
+  classifiers:
+    type_weights: models/shoe_type_classifier.pt
+    cleanliness_weights: models/cleanliness_classifier.pt
+    backbone: mobilenet_v3_small   # mobilenet_v3_small | resnet18
+    pretrained_backbone: true      # ImageNet weights when init before load_state_dict
+    input_size: 224
+    device: auto                   # auto | cpu | cuda
+  # Subfolders of type_dir with images become class names (and fill missing type_to_bucket).
+  dataset:
+    type_dir: dataset/type
+    sync_type_labels_from_dir: true
+    use_class_order_file: true    # if dataset/type/class_order.txt exists, use that order
+    class_order_file: class_order.txt
+    show_dataset_class_in_ui: true # UI/API: show folder name ("brand" / style) from the type head
+  # Default wash bucket for folder names not listed in type_to_bucket (also used when syncing from disk)
+  type_to_bucket_default: casual
+  # Fine-grained type labels (overwritten at runtime when sync_type_labels_from_dir + folders exist)
+  type_class_names: [sneaker, boot, sandal, loafer, other]
+  cleanliness_class_names: [clean, dirty]
+  # Map each dataset/type/<folder> name → wash/UI bucket (casual | sports)
+  type_to_bucket:
+    sneaker: sports
+    boot: casual
+    sandal: casual
+    loafer: casual
+    other: casual
+  # Extra CLAHE on the YOLO crop before classifiers (usually off — ROI preprocess already applies CLAHE)
+  normalize_crop_clahe: false
+  # P(dirty) thresholds → rule_based dirt_level strings (wash_decision)
+  cleanliness:
+    clean_if_dirty_prob_below: 0.35
+    moderate_if_dirty_prob_below: 0.55
+    dirty_if_dirty_prob_below: 0.75
+  logging:
+    log_inference_ms: false
+
 # Decision thresholds (tune with real images)
 vision:
   # OpenCV-only: sports vs casual = fused score (edges + gradient + texture + saturation); dirt from HSV + variance
@@ -140,8 +192,23 @@ vision:
   sports_edge_density_min: 0.09
   # Fusion score 0..1; sports if score >= threshold (tune with kiosk "Type" line)
   # New segmented classifier: features are computed on shoe pixels only (background excluded)
-  # Lower threshold = more "sports", higher = more "casual". Default 0.50 is balanced.
-  sports_fusion_threshold: 0.50
+  # Lower = more sports, higher = more casual. 0.53 worked as a middle before over-tuning.
+  sports_fusion_threshold: 0.53
+  sports_fusion_casual_bias: 0.01
+  # Minimal-palette + slim (mild) — helps USB casual vs always-sports; paired with threshold above
+  casual_strength_rules_enabled: true
+  casual_minimal_palette_max_variety: 3.5
+  casual_minimal_palette_max_sat: 0.26
+  casual_minimal_palette_boost: 0.05
+  casual_minimal_palette_sports_dampen: 0.92
+  casual_soft_bright_sole_on_minimal_palette: true
+  casual_bright_sole_sports_add_when_minimal_palette: 0.04
+  casual_slim_sole_thickness_max: 0.18
+  casual_slim_width_variation_max: 0.20
+  casual_slim_defects_max: 9.0
+  casual_slim_max_color_variety: 3.8
+  casual_slim_silhouette_boost: 0.05
+  casual_slim_sports_penalty: 0.04
   rule_leather_saturation_max: 58
   rule_leather_brightness_v_max: 135
   rule_leather_edge_density_max: 0.12
@@ -206,7 +273,7 @@ vision:
   sports_mesh_low_sat_gradient_min: 0.148
   sports_mesh_low_sat_min: 18
 
-  # --- Leather / dress / muted casual (mapped to "casual", not "sports") ---
+  # --- Leather / dress / muted (mapped to "casual" in rules) ---
   leather_like_detection_enabled: true
   leather_like_rule_casual_boost: 0.26
   leather_like_rule_sports_scale: 0.42
@@ -240,9 +307,11 @@ wash:
 # Reference photos: put clean booth examples under datasets/shoe_types/casual/clean/ and
 # datasets/shoe_types/sports/clean/ (same ROI + lighting as live view). If clean/ has at
 # least one image for a type, only that folder is used for that type (parent-folder junk ignored).
+# path: relative to this app folder. Use `../datasets/shoe_types` if you only maintain refs at repo root.
 shoe_type_dataset:
   enabled: true
   path: datasets/shoe_types
+  # Histogram + OpenCV vision fusion (see ai_camera + shoe_type_classifier)
   refine_rule_based_type: true
   # Subfolder name under each type; if it exists and has images, ONLY those files are references.
   reference_subfolder: clean
@@ -257,6 +326,10 @@ shoe_type_dataset:
   bhattacharyya_mix: 0.30
   # Mean of best K histogram matches per type (use 3 when you have several clean refs per type).
   top_k_refs: 3
+  # Slightly less HSV / more shape–lighting than default — USB booth lighting skews color vs ref photos.
+  weight_hsv: 0.36
+  weight_gray: 0.28
+  weight_lab: 0.36
   # If histogram picks "sports" but frame looks like leather/dress (muted), prefer "casual".
   leather_like_override_dataset_sports: true
   leather_like_histogram_gap_soft: 0.22
@@ -264,13 +337,19 @@ shoe_type_dataset:
   leather_like_accept_weak_casual_histogram: true
   fusion:
     enabled: true
-    # Vision weighted slightly higher — frame cues beat noisy histograms when refs are sparse
-    weight_histogram: 0.36
-    weight_vision: 0.49
+    # Balanced mix (tune with your clean/ ref folders)
+    weight_histogram: 0.38
+    weight_vision: 0.47
     weight_catalog: 0.15
+    vision_prior_peak: 0.70
+    hist_prefers_casual_min_gap: 0.12
+    penalize_sports_when_hist_prefers_casual: 0.10
+    # Set gap to 0 to disable (the “always sports” run had this on — it over-pushed sports)
+    hist_prefers_sports_min_gap: 0.0
+    penalize_casual_when_hist_prefers_sports: 0.0
     boost_when_vision_sports: true
-    extra_vision_weight_when_sports: 0.08
-    sports_logit_boost: 0.12
+    extra_vision_weight_when_sports: 0.04
+    sports_logit_boost: 0.08
     boost_when_vision_leather: true
     extra_vision_weight_when_leather: 0.14
     leather_logit_boost: 0.24
@@ -281,8 +360,7 @@ shoe_type_dataset:
     penalize_sports_when_vision_casual: 0.12
     penalize_sports_when_vision_leather: 0.1
     temperature: 0.5
-    # If fused confidence or top2 separation is weak, fall back to catalog+vision.
-    min_confidence: 0.52
+    min_confidence: 0.48
     min_top2_margin: 0.08
 
 # Reference images: datasets/shoes/<Category>/<StyleName>.avif (or .jpg / .png)

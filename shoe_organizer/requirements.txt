@@ -11,6 +11,9 @@ PyYAML>=6.0
 python-dotenv>=1.0.0
 pyserial>=3.5  # ESP32 USB serial telemetry (serial_bridge)
 
+# Two-stage YOLOv8 + PyTorch classifiers (optional; heavier — PC / Jetson):
+# pip install -r requirements-ai.txt
+
 # Pi runtime for Phase 2 TFLite shoe model (optional):
 # tflite-runtime>=2.14.0
 

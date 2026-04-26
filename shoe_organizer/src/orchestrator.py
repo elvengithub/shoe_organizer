@@ -11,7 +11,12 @@ from .sensors import CompartmentSensors
 from .stepper_3axis import ThreeAxisCartesian
 from .esp32_telemetry import apply_to_climate_snapshot
 from .serial_bridge import SerialBridge
-from .shoe_taxonomy import SHOE_TYPE_LABELS, format_shoe_display_name
+from .shoe_taxonomy import (
+    SHOE_TYPE_LABELS,
+    format_neural_shoe_label,
+    format_shoe_display_name,
+    pretty_dataset_class_name,
+)
 from .shoe_type_smoothing import ShoeTypeSmoother
 from .text_presence import analyze_presented_text
 from .vision_service import ShoeCategory, VisionResult, WebcamCapture
@@ -488,9 +493,29 @@ class ShoeOrganizerOrchestrator:
         detail["wash_reason"] = wplan.reason
         ts = SHOE_TYPE_LABELS.get(smooth_cat, (smooth_cat or "casual").title())
         detail["shoe_type_short"] = ts
-        detail["shoe_type_label"] = format_shoe_display_name(
-            smooth_cat, ts, detail.get("catalog_category"), detail.get("catalog_style")
-        )
+        ap_pipe = self.cfg.get("ai_pipeline") or {}
+        ds_ui = ap_pipe.get("dataset") or {}
+        dataset_first = bool(ds_ui.get("show_dataset_class_in_ui", True))
+        ft_raw = detail.get("fine_shoe_type")
+        if (
+            ft_raw is not None
+            and str(detail.get("inference_backend", "")).startswith("yolov8")
+        ):
+            ft = str(ft_raw)
+            detail["shoe_dataset_class"] = ft
+            detail["shoe_dataset_style"] = pretty_dataset_class_name(ft)
+            detail["shoe_type_label"] = format_neural_shoe_label(
+                smooth_cat,
+                ts,
+                ft,
+                catalog_category=detail.get("catalog_category"),
+                catalog_style=detail.get("catalog_style"),
+                dataset_class_first=dataset_first,
+            )
+        else:
+            detail["shoe_type_label"] = format_shoe_display_name(
+                smooth_cat, ts, detail.get("catalog_category"), detail.get("catalog_style")
+            )
         detail["object_classification"] = f"shoe_{smooth_cat}"
         scores = detail.get("shoe_type_dataset_scores")
         if isinstance(scores, dict) and smooth_cat in scores:
