@@ -2,23 +2,55 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
   <title>Shoe organizer</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=13" />
 </head>
 <body>
-  <header>
-    <h1>Shoe organizer</h1>
-    <p class="sub">Compartment 1 — cleaning bay · 2–6 — storage</p>
+  <header class="site-header">
+    <div class="site-header__shell">
+      <div class="site-header__top">
+        <div class="site-header__row">
+          <span class="site-header__mark" aria-hidden="true">
+            <svg class="site-header__mark-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" focusable="false" aria-hidden="true">
+              <!-- Side-view sneaker (reads clearly at small size; not a “cloud”) -->
+              <path
+                fill="rgba(255,255,255,0.22)"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M4.5 15.2v1.3c0 .7.6 1.2 1.2 1.2H18c.8 0 1.4-.6 1.5-1.4l.3-1.8c.1-.8-.5-1.5-1.3-1.6l-2.4-.3-1.9-4.1a2.1 2.1 0 00-1.9-1.2H9.2a2.1 2.1 0 00-1.9 1.3L6 12.3H5.7c-.7 0-1.2.6-1.2 1.3v1.6z"
+              />
+              <path stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.55" d="M5 16.8h13.5" />
+              <path stroke="currentColor" stroke-width="0.9" stroke-linecap="round" opacity="0.45" d="M10 8.5l-.8 3.8M14 8.6l1.1 3.2" />
+            </svg>
+          </span>
+          <div class="site-header__copy">
+            <p class="site-header__eyebrow">Bay control · dashboard</p>
+            <h1 class="site-header__title">Shoe organizer</h1>
+            <p class="site-header__sub">Compartment 1 — cleaning bay · 2–6 — storage</p>
+          </div>
+        </div>
+        <div class="site-header__aside">
+          <span class="site-header__live" role="status" aria-label="Interface active">
+            <span class="site-header__live-dot" aria-hidden="true"></span>
+            Live
+          </span>
+        </div>
+      </div>
+      <div class="site-header__tags" aria-label="Areas">
+        <span class="site-header__tag">Comp. 1 · Bay</span>
+        <span class="site-header__tag site-header__tag--soft">Slots 2–6</span>
+      </div>
+    </div>
   </header>
 
   <main>
     <section class="camera-panel" aria-label="Main bay camera preview">
-      <h2 class="camera-title">Cleaning bay (compartment 1)</h2>
-      <p class="camera-sub">
-        Shoes are identified and washed here. The camera shows this bay. Classification is <strong>shoe-only</strong>
-        (type, catalog match, wash). Accepted shoes are routed to free storage in compartments 2–6.
-      </p>
       <div class="bay-layout">
         <div class="camera-frame">
           <img
@@ -229,38 +261,77 @@
       const data = await r.json();
       gridEl.innerHTML = "";
       for (const [id, row] of Object.entries(data)) {
-        const card = document.createElement("div");
-        card.className = "card";
-        const esp =
-          row.esp32_online === true
-            ? `<p class="esp32-live">ESP32 · ${row.esp32_age_seconds != null ? esc(String(row.esp32_age_seconds)) + "s ago" : "live"}</p>`
-            : row.esp32_online === false
-              ? `<p class="esp32-off">ESP32 offline</p>`
-              : "";
+        const card = document.createElement("article");
+        card.className = "card slot-card";
+        const occText = row.occupied ? "Occupied" : "Free";
+        const espLive = row.esp32_online === true;
+        const espOff = row.esp32_online === false;
+        const espByline =
+          espLive
+            ? row.esp32_age_seconds != null
+              ? `ESP32 · ${esc(String(row.esp32_age_seconds))}s ago`
+              : "ESP32 · live"
+            : espOff
+              ? "ESP32 · offline"
+              : "Climate sensors";
         const cap =
           row.ultrasonic_max_cm != null && row.ultrasonic_max_cm !== undefined
             ? esc(String(row.ultrasonic_max_cm))
             : "75";
-        let dist = "";
+        const orderRaw = row.order_status != null && row.order_status !== "" ? String(row.order_status) : "—";
+        const headline =
+          orderRaw !== "—"
+            ? esc(orderRaw)
+            : row.occupied
+              ? "Occupied · storage bay"
+              : "Available · ready for placement";
+        const tags = [];
+        tags.push(occText);
+        if (espLive) tags.push("ESP32 live");
+        else if (espOff) tags.push("ESP32 offline");
         if (row.distance_cm != null && row.distance_cm !== undefined) {
-          dist = `<p>Ultrasonic: ${esc(String(row.distance_cm))} cm <span class="ultra-hint">(in bay)</span></p>`;
-        } else if (row.esp32_online === true && row.ultrasonic_clear === true) {
-          dist = `<p class="ultra-clear">Ultrasonic: clear — nothing within ${cap} cm of sensor</p>`;
+          tags.push(`${esc(String(row.distance_cm))} cm · bay`);
+        } else if (espLive && row.ultrasonic_clear === true) {
+          tags.push(`Clear · ${cap} cm`);
         }
-        const odor =
-          row.odor_level_pct != null && row.odor_level_pct !== undefined
-            ? `<p>Odor index: ${esc(String(row.odor_level_pct))}%</p>`
+        if (row.odor_level_pct != null && row.odor_level_pct !== undefined) {
+          tags.push(`Odor ${esc(String(row.odor_level_pct))}%`);
+        }
+        if (row.risk_level) tags.push(esc(String(row.risk_level)));
+        const tagsHtml = tags.map((t) => `<span class="slot-tag">${t}</span>`).join("");
+        const temp = row.temperature_c != null && row.temperature_c !== undefined ? esc(String(row.temperature_c)) : "—";
+        const rh = row.humidity_pct != null && row.humidity_pct !== undefined ? esc(String(row.humidity_pct)) : "—";
+        const saveClass =
+          "slot-card__save" +
+          (espLive
+            ? " slot-card__save--online"
+            : espOff
+              ? " slot-card__save--offline"
+              : " slot-card__save--neutral");
+        const saveLabel = espLive ? "Live" : espOff ? "Offline" : "Sensors";
+        const note =
+          row.bio_message
+            ? `<p class="slot-card__note">${esc(String(row.bio_message))}</p>`
             : "";
-        const risk = row.risk_level ? `<p class="risk-line">Risk: ${esc(String(row.risk_level))}</p>` : "";
-        const bio = row.bio_message ? `<p class="bio-line">${esc(String(row.bio_message))}</p>` : "";
         card.innerHTML = `
-          <h2>Slot ${id}</h2>
-          ${esp}
-          <p>T: ${row.temperature_c ?? "—"} °C</p>
-          <p>RH: ${row.humidity_pct ?? "—"} %</p>
-          ${dist}${odor}${risk}${bio}
-          <p class="${row.occupied ? "occ" : "free"}">${row.occupied ? "Occupied" : "Free"}</p>
-          <p class="order-status"><span class="order-status-k">Order</span> ${esc(String(row.order_status ?? "—"))}</p>
+          <div class="slot-card__head">
+            <span class="slot-card__mark" aria-hidden="true">${esc(String(id))}</span>
+            <span class="${saveClass}" role="status">${saveLabel}</span>
+          </div>
+          <div class="slot-card__byline">
+            <strong>Slot ${esc(String(id))}</strong>
+            <span>${espByline}</span>
+          </div>
+          <h3 class="slot-card__headline">${headline}</h3>
+          <div class="slot-card__tags">${tagsHtml}</div>
+          ${note}
+          <div class="slot-card__footer">
+            <div class="slot-card__climate">
+              <span class="slot-card__climate-main">${temp}<span class="slot-card__climate-unit">°C</span></span>
+              <span class="slot-card__climate-sub">${rh}% relative humidity</span>
+            </div>
+            <span class="slot-card__cta" role="text">Details</span>
+          </div>
         `;
         gridEl.appendChild(card);
       }
