@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=13" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=17" />
 </head>
 <body>
   <header class="site-header">
@@ -52,27 +52,43 @@
   <main>
     <section class="camera-panel" aria-label="Main bay camera preview">
       <div class="bay-layout">
-        <div class="camera-frame">
-          <img
-            id="cam-stream"
-            src="{{ url_for('camera_stream') }}"
-            width="640"
-            height="480"
-            alt="Live camera preview of the main bay"
-          />
-          <div id="ai-overlay" class="ai-overlay" role="status" aria-live="polite">
-            <div class="ai-overlay-row">
-              <div class="ai-chip shoe">
-                <span class="ai-chip-k">Shoe scope</span>
-                <span id="ai-shoe" class="ai-chip-v">…</span>
+        <div class="camera-section">
+          <div class="camera-frame">
+            <img
+              id="cam-stream"
+              src="{{ url_for('camera_stream') }}"
+              width="640"
+              height="480"
+              alt="Live camera preview of the main bay"
+            />
+            <div id="ai-overlay" class="ai-overlay" role="status" aria-live="polite">
+              <div class="ai-overlay-row">
+                <div class="ai-chip shoe">
+                  <span class="ai-chip-k">Shoe scope</span>
+                  <span id="ai-shoe" class="ai-chip-v">…</span>
+                </div>
+                <div id="ai-wash-chip" class="ai-chip wash wash-soft">
+                  <span class="ai-chip-k">Wash</span>
+                  <span id="ai-wash" class="ai-chip-v">…</span>
+                </div>
               </div>
-              <div id="ai-wash-chip" class="ai-chip wash wash-soft">
-                <span class="ai-chip-k">Wash</span>
-                <span id="ai-wash" class="ai-chip-v">…</span>
-              </div>
+              <p id="ai-reason" class="ai-reason"></p>
+              <p id="ai-dirt" class="ai-dirt"></p>
             </div>
-            <p id="ai-reason" class="ai-reason"></p>
-            <p id="ai-dirt" class="ai-dirt"></p>
+          </div>
+          <div class="camera-controls">
+            <button type="button" id="btn-toggle-motors" class="control-btn" aria-pressed="false">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              Motors
+            </button>
+            <button type="button" id="btn-toggle-pumps" class="control-btn" aria-pressed="false">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
+              Pump
+            </button>
+            <button type="button" id="btn-stop-all" class="control-btn stop-btn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>
+              Stop All
+            </button>
           </div>
         </div>
         <section class="grid" id="status-grid" aria-label="Storage slots 2 through 6"></section>
@@ -84,11 +100,91 @@
     <p class="hint">Kiosk: open Chromium fullscreen to this page on the Pi touch LCD.</p>
   </main>
 
+  <div id="slot-detail-modal" class="slot-modal" hidden aria-hidden="true">
+    <div class="slot-modal__backdrop" data-slot-modal-dismiss tabindex="-1"></div>
+    <div
+      class="slot-modal__dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="slot-modal-title"
+    >
+      <button type="button" class="slot-modal__close" aria-label="Close details">
+        <svg class="slot-modal__close-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </button>
+      <div id="slot-modal-hero" class="slot-modal__hero"></div>
+      <div id="slot-modal-body" class="slot-modal__body"></div>
+    </div>
+  </div>
+  <!-- Temperature Warning Modal -->
+  <div id="temp-warning-modal" class="slot-modal temp-warning" hidden aria-hidden="true">
+    <div class="slot-modal__backdrop" data-temp-warning-dismiss tabindex="-1"></div>
+    <div class="slot-modal__dialog" role="alertdialog" aria-modal="true" aria-labelledby="temp-warning-title">
+      <button type="button" class="slot-modal__close" data-temp-warning-dismiss aria-label="Dismiss warning">
+        <svg class="slot-modal__close-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </button>
+      <div class="temp-warning__header">
+        <div class="temp-warning__icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 9V14M12 17.01L12.01 16.998M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="temp-warning__titles">
+          <h2 id="temp-warning-title" class="temp-warning__title">Temperature Alert</h2>
+          <p class="temp-warning__sub">Critical heat detected in storage</p>
+        </div>
+      </div>
+      <div class="temp-warning__body">
+        <p id="temp-warning-message" class="temp-warning__message">Slot -- has reached --°C.</p>
+        <p class="temp-warning__hint">Cooling is recommended to prevent damage.</p>
+      </div>
+      <div class="temp-warning__actions">
+        <button type="button" id="temp-warning-fan-btn" class="temp-warning__btn temp-warning__btn--primary">
+          Enable Fan
+        </button>
+        <button type="button" class="temp-warning__btn temp-warning__btn--secondary" data-temp-warning-dismiss>
+          Dismiss
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const flowStatusEl = document.getElementById("flow-status");
     const gridEl = document.getElementById("status-grid");
     const washChipEl = document.getElementById("ai-wash-chip");
     const overlayEl = document.getElementById("ai-overlay");
+    const slotModalEl = document.getElementById("slot-detail-modal");
+    const slotModalHeroEl = document.getElementById("slot-modal-hero");
+    const slotModalBodyEl = document.getElementById("slot-modal-body");
+    const slotModalCloseEl = slotModalEl.querySelector(".slot-modal__close");
+
+    const btnMotors = document.getElementById("btn-toggle-motors");
+    const btnPumps = document.getElementById("btn-toggle-pumps");
+    const btnStopAll = document.getElementById("btn-stop-all");
+
+    const tempWarningModalEl = document.getElementById("temp-warning-modal");
+    const tempWarningMessageEl = document.getElementById("temp-warning-message");
+    const tempWarningFanBtnEl = document.getElementById("temp-warning-fan-btn");
+    let tempWarningOpenSlotId = null;
+    let dismissedAlerts = new Set();
+
+    const SO_URL_ROOT = {{ request.url_root | tojson }};
+    function apiUrl(path) {
+      const p = path.startsWith("/") ? path : "/" + path;
+      if (SO_URL_ROOT && typeof SO_URL_ROOT === "string") {
+        const base = SO_URL_ROOT.replace(/\/+$/, "");
+        if (base) return base + p;
+      }
+      return p;
+    }
+
+    let lastStatusBySlot = {};
+    let slotModalOpenId = null;
+    let slotModalLastFocus = null;
 
     let stableFrames = 0;
     let lastIntakeAt = 0;
@@ -97,7 +193,7 @@
 
     async function runIntakeQuiet() {
       try {
-        const r = await fetch("/api/intake", { method: "POST" });
+        const r = await fetch(apiUrl("/api/intake"), { method: "POST" });
         const j = await r.json();
         flowStatusEl.classList.remove("flow-err");
         if (j.ok === false && j.error === "analysis_failed") {
@@ -155,7 +251,7 @@
       const dirtEl = document.getElementById("ai-dirt");
       let j = {};
       try {
-        const r = await fetch("/api/camera/analyze");
+        const r = await fetch(apiUrl("/api/camera/analyze"));
         j = await r.json();
         overlayEl.classList.remove("ai-not-shoe", "ai-no-frame", "ai-no-catalog", "ai-stabilizing");
         if (!j.ok) {
@@ -256,9 +352,231 @@
         .replace(/"/g, "&quot;");
     }
 
+    function formatDetailValue(v) {
+      if (v === null || v === undefined || v === "") return "—";
+      if (typeof v === "boolean") return v ? "Yes" : "No";
+      return esc(String(v));
+    }
+
+    function esp32LinkLabel(row) {
+      if (row.esp32_online === true) {
+        return row.esp32_age_seconds != null
+          ? `Live · last data ${formatDetailValue(row.esp32_age_seconds)} s ago`
+          : "Live";
+      }
+      if (row.esp32_online === false) return "Offline";
+      return "No ESP32 telemetry";
+    }
+
+    function modalMetric(k, v) {
+      return `<div class="slot-modal__metric">
+        <span class="slot-modal__metric-k">${esc(k)}</span>
+        <span class="slot-modal__metric-v">${formatDetailValue(v)}</span>
+      </div>`;
+    }
+
+    function modalSection(title, subtitle, pairs) {
+      const metrics = pairs.map(([k, v]) => modalMetric(k, v)).join("");
+      const sub = subtitle ? `<p class="slot-modal__section-sub">${esc(subtitle)}</p>` : "";
+      return `<section class="slot-modal__section" aria-label="${esc(title)}">
+        <header class="slot-modal__section-head">
+          <h3 class="slot-modal__section-title">${esc(title)}</h3>
+          ${sub}
+        </header>
+        <div class="slot-modal__metrics">${metrics}</div>
+      </section>`;
+    }
+
+    function slotModalHeroPills(row) {
+      const occClass = row.occupied ? "slot-modal__pill--occ-busy" : "slot-modal__pill--occ-free";
+      const occLabel = row.occupied ? "Occupied" : "Vacant";
+      let espClass = "slot-modal__pill--esp-na";
+      let espLabel = "ESP32 · —";
+      if (row.esp32_online === true) {
+        espClass = "slot-modal__pill--esp-live";
+        espLabel =
+          row.esp32_age_seconds != null
+            ? `ESP32 · ${formatDetailValue(row.esp32_age_seconds)}s`
+            : "ESP32 · live";
+      } else if (row.esp32_online === false) {
+        espClass = "slot-modal__pill--esp-off";
+        espLabel = "ESP32 · offline";
+      }
+      const fanClass = row.storage_fan_on ? "slot-modal__pill--fan-on" : "slot-modal__pill--fan-off";
+      const fanLabel = row.storage_fan_on ? "Fan on" : "Fan off";
+      return `<ul class="slot-modal__pills" aria-label="Quick status">
+        <li><span class="slot-modal__pill ${occClass}">${esc(occLabel)}</span></li>
+        <li><span class="slot-modal__pill ${espClass}">${espLabel}</span></li>
+        <li><span class="slot-modal__pill ${fanClass}">${esc(fanLabel)}</span></li>
+      </ul>`;
+    }
+
+    function populateSlotModal(slotId) {
+      const row = lastStatusBySlot[slotId];
+      if (!row) {
+        slotModalHeroEl.innerHTML = "";
+        slotModalBodyEl.innerHTML = `<p class="slot-modal__empty">No data for this slot.</p>`;
+        return;
+      }
+      const orderRaw = row.order_status != null && row.order_status !== "" ? String(row.order_status) : "—";
+      const headline =
+        orderRaw !== "—"
+          ? orderRaw
+          : row.occupied
+            ? "Occupied · storage bay"
+            : "Available · ready for placement";
+      const tempStr =
+        row.temperature_c != null && row.temperature_c !== undefined
+          ? `${formatDetailValue(row.temperature_c)} °C`
+          : "—";
+      const rhStr =
+        row.humidity_pct != null && row.humidity_pct !== undefined
+          ? `${formatDetailValue(row.humidity_pct)} %`
+          : "—";
+
+      slotModalHeroEl.innerHTML = `
+        <div class="slot-modal__hero-grid">
+          <div class="slot-modal__hero-main">
+            <p class="slot-modal__hero-eyebrow">Storage telemetry</p>
+            <h2 id="slot-modal-title" class="slot-modal__hero-title">
+              <span class="slot-modal__hero-slot-label">Slot</span>
+              <span class="slot-modal__hero-num">${esc(String(slotId))}</span>
+            </h2>
+            <p class="slot-modal__hero-lede">${esc(headline)}</p>
+            <div class="slot-modal__hero-stats" aria-hidden="true">
+              <div class="slot-modal__hero-stat">
+                <span class="slot-modal__hero-stat-v">${tempStr}</span>
+                <span class="slot-modal__hero-stat-k">Temperature</span>
+              </div>
+              <div class="slot-modal__hero-stat-div" aria-hidden="true"></div>
+              <div class="slot-modal__hero-stat">
+                <span class="slot-modal__hero-stat-v">${rhStr}</span>
+                <span class="slot-modal__hero-stat-k">Humidity</span>
+              </div>
+            </div>
+          </div>
+          <div class="slot-modal__hero-aside">
+            ${slotModalHeroPills(row)}
+          </div>
+        </div>
+      `;
+
+      const sections = [
+        modalSection("Climate & occupancy", "DHT and placement context", [
+          ["Order / routing", orderRaw],
+          ["Occupied", row.occupied],
+          ["Temperature", row.temperature_c != null ? `${formatDetailValue(row.temperature_c)} °C` : null],
+          ["Relative humidity", row.humidity_pct != null ? `${formatDetailValue(row.humidity_pct)} %` : null],
+        ]),
+        modalSection("Air quality", "Sensors and risk", [
+          ["Odor level", row.odor_level_pct != null ? `${formatDetailValue(row.odor_level_pct)} %` : null],
+          ["Gas (raw ADC)", row.gas_raw],
+          ["Risk level", row.risk_level],
+          ["Bio / air note", row.bio_message],
+        ]),
+      ].join("");
+
+      slotModalBodyEl.innerHTML = `<div class="slot-modal__sections">${sections}</div>`;
+    }
+
+    function openSlotModal(slotId) {
+      const idStr = String(slotId);
+      if (!lastStatusBySlot[idStr]) return;
+      slotModalOpenId = idStr;
+      slotModalLastFocus = document.activeElement;
+      populateSlotModal(idStr);
+      slotModalEl.hidden = false;
+      slotModalEl.setAttribute("aria-hidden", "false");
+      document.body.classList.add("slot-modal-open");
+      slotModalCloseEl.focus();
+    }
+
+    function closeSlotModal() {
+      slotModalOpenId = null;
+      slotModalEl.hidden = true;
+      slotModalEl.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("slot-modal-open");
+      if (slotModalLastFocus && typeof slotModalLastFocus.focus === "function") {
+        try {
+          slotModalLastFocus.focus();
+        } catch {
+          /* ignore */
+        }
+      }
+      slotModalLastFocus = null;
+    }
+
+    function openTempWarningModal(slotId, temperature) {
+      if (dismissedAlerts.has(slotId)) return;
+      if (tempWarningOpenSlotId === slotId) return;
+      tempWarningOpenSlotId = slotId;
+      tempWarningMessageEl.textContent = `Slot ${slotId} has reached ${temperature}°C.`;
+      
+      // Update fan button click handler
+      tempWarningFanBtnEl.onclick = () => handleEnableFanFromWarning(slotId);
+      
+      tempWarningModalEl.hidden = false;
+      tempWarningModalEl.setAttribute("aria-hidden", "false");
+      document.body.classList.add("slot-modal-open");
+    }
+
+    function closeTempWarningModal(dismissPermanently = false) {
+      if (dismissPermanently && tempWarningOpenSlotId) {
+        dismissedAlerts.add(tempWarningOpenSlotId);
+      }
+      tempWarningOpenSlotId = null;
+      tempWarningModalEl.hidden = true;
+      tempWarningModalEl.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("slot-modal-open");
+    }
+
+    async function handleEnableFanFromWarning(slotId) {
+      const btn = document.querySelector(`.slot-fan-btn--on[data-slot-fan="${slotId}"]`);
+      if (btn) {
+        await handleSlotFanButtonClick(btn);
+      } else {
+        try {
+          await fetch(apiUrl("/api/slot-fans"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ compartment: Number(slotId), on: true }),
+            cache: "no-store",
+          });
+        } catch (e) {
+          console.error("Failed to enable fan from warning", e);
+        }
+      }
+      closeTempWarningModal(true);
+    }
+
     async function refreshStatus() {
-      const r = await fetch("/api/status");
-      const data = await r.json();
+      const r = await fetch(apiUrl("/api/status"), { cache: "no-store" });
+      const resp = await r.json();
+      const data = resp.slots || {};
+      lastStatusBySlot = data;
+
+      // Temperature check for slots 2-6
+      for (const [id, row] of Object.entries(data)) {
+        const slotId = parseInt(id);
+        if (slotId >= 2 && slotId <= 6) {
+          if (row.temperature_c > 38 && !row.storage_fan_on && !dismissedAlerts.has(id)) {
+            openTempWarningModal(id, row.temperature_c);
+            break; 
+          }
+          if (row.temperature_c <= 36) {
+            dismissedAlerts.delete(id);
+          }
+        }
+      }
+
+      // Update global controls
+      const gm = !!resp.global_motors_on;
+      const gp = !!resp.global_pumps_on;
+      btnMotors.setAttribute("aria-pressed", gm);
+      btnMotors.classList.toggle("is-active", gm);
+      btnPumps.setAttribute("aria-pressed", gp);
+      btnPumps.classList.toggle("is-active", gp);
+
       gridEl.innerHTML = "";
       for (const [id, row] of Object.entries(data)) {
         const card = document.createElement("article");
@@ -301,6 +619,9 @@
         const tagsHtml = tags.map((t) => `<span class="slot-tag">${t}</span>`).join("");
         const temp = row.temperature_c != null && row.temperature_c !== undefined ? esc(String(row.temperature_c)) : "—";
         const rh = row.humidity_pct != null && row.humidity_pct !== undefined ? esc(String(row.humidity_pct)) : "—";
+        const fanOn = row.storage_fan_on === true;
+        const fanStateClass = fanOn ? "slot-card__fan-state--on" : "slot-card__fan-state--off";
+        const fanStateText = fanOn ? "On" : "Off";
         const saveClass =
           "slot-card__save" +
           (espLive
@@ -324,18 +645,155 @@
           </div>
           <h3 class="slot-card__headline">${headline}</h3>
           <div class="slot-card__tags">${tagsHtml}</div>
+          <div class="slot-card__fan" role="group" aria-label="Storage fan for slot ${esc(String(id))}">
+            <div class="slot-card__fan-row">
+              <span class="slot-card__fan-label">Fan <strong class="slot-card__fan-state ${fanStateClass}">${fanStateText}</strong></span>
+              <div class="slot-card__fan-btns">
+                <button type="button" class="slot-fan-btn slot-fan-btn--on${fanOn ? " is-selected" : ""}" data-slot-fan="${esc(String(id))}" data-fan-cmd="on" aria-pressed="${fanOn}">On</button>
+                <button type="button" class="slot-fan-btn slot-fan-btn--off${!fanOn ? " is-selected" : ""}" data-slot-fan="${esc(String(id))}" data-fan-cmd="off" aria-pressed="${!fanOn}">Off</button>
+              </div>
+            </div>
+          </div>
           ${note}
           <div class="slot-card__footer">
             <div class="slot-card__climate">
               <span class="slot-card__climate-main">${temp}<span class="slot-card__climate-unit">°C</span></span>
               <span class="slot-card__climate-sub">${rh}% relative humidity</span>
             </div>
-            <span class="slot-card__cta" role="text">Details</span>
+            <button type="button" class="slot-card__cta slot-card__details-btn" data-slot-detail="${esc(String(id))}">Details</button>
           </div>
         `;
         gridEl.appendChild(card);
       }
+      if (slotModalOpenId && lastStatusBySlot[slotModalOpenId]) {
+        populateSlotModal(slotModalOpenId);
+      }
     }
+
+    async function handleSlotFanButtonClick(btn) {
+      const slot = btn.getAttribute("data-slot-fan");
+      const cmd = btn.getAttribute("data-fan-cmd");
+      if (!slot || (cmd !== "on" && cmd !== "off")) return;
+      const on = cmd === "on";
+      
+      // Optimistically update UI
+      const idStr = String(slot);
+      if (lastStatusBySlot[idStr]) {
+        lastStatusBySlot[idStr].storage_fan_on = on;
+        // Find the card and update classes immediately
+        const card = btn.closest(".slot-card");
+        if (card) {
+          const stateEl = card.querySelector(".slot-card__fan-state");
+          if (stateEl) {
+            stateEl.textContent = on ? "On" : "Off";
+            stateEl.className = "slot-card__fan-state " + (on ? "slot-card__fan-state--on" : "slot-card__fan-state--off");
+          }
+          const onBtn = card.querySelector(".slot-fan-btn--on");
+          const offBtn = card.querySelector(".slot-fan-btn--off");
+          if (onBtn) {
+            onBtn.classList.toggle("is-selected", on);
+            onBtn.setAttribute("aria-pressed", on);
+          }
+          if (offBtn) {
+            offBtn.classList.toggle("is-selected", !on);
+            offBtn.setAttribute("aria-pressed", !on);
+          }
+        }
+      }
+
+      btn.disabled = true;
+      try {
+        const r = await fetch(apiUrl("/api/slot-fans"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ compartment: Number(slot), on }),
+          cache: "no-store",
+        });
+        let j = {};
+        try {
+          j = await r.json();
+        } catch {
+          j = {};
+        }
+        if (!r.ok || !j.ok) {
+          flowStatusEl.classList.add("flow-err");
+          flowStatusEl.textContent = (j && j.error) || "Fan command failed.";
+          // Revert on error
+          await refreshStatus();
+          return;
+        }
+        flowStatusEl.classList.remove("flow-err");
+        flowStatusEl.textContent = "";
+        // Don't refresh immediately to avoid race condition with ESP32 reporting back
+      } catch {
+        flowStatusEl.classList.add("flow-err");
+        flowStatusEl.textContent = "Could not reach fan API.";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    gridEl.addEventListener("click", (e) => {
+      const fanBtn = e.target.closest(".slot-fan-btn");
+      if (fanBtn && gridEl.contains(fanBtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleSlotFanButtonClick(fanBtn);
+        return;
+      }
+      const det = e.target.closest(".slot-card__details-btn");
+      if (det && gridEl.contains(det)) {
+        e.preventDefault();
+        const sid = det.getAttribute("data-slot-detail");
+        if (sid) openSlotModal(sid);
+      }
+    });
+
+    slotModalCloseEl.addEventListener("click", closeSlotModal);
+    slotModalEl.querySelectorAll("[data-slot-modal-dismiss]").forEach((el) => {
+      el.addEventListener("click", closeSlotModal);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        if (!slotModalEl.hidden) closeSlotModal();
+        if (!tempWarningModalEl.hidden) closeTempWarningModal();
+      }
+    });
+
+    tempWarningModalEl.querySelectorAll("[data-temp-warning-dismiss]").forEach((el) => {
+      el.addEventListener("click", () => closeTempWarningModal(true));
+    });
+
+    async function handleMotorToggle() {
+      const currentlyOn = btnMotors.getAttribute("aria-pressed") === "true";
+      const nextOn = !currentlyOn;
+      const r = await fetch(apiUrl("/api/motors"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: nextOn }),
+      });
+      if (r.ok) refreshStatus();
+    }
+
+    async function handlePumpToggle() {
+      const currentlyOn = btnPumps.getAttribute("aria-pressed") === "true";
+      const nextOn = !currentlyOn;
+      const r = await fetch(apiUrl("/api/pumps"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: nextOn }),
+      });
+      if (r.ok) refreshStatus();
+    }
+
+    async function handleStopAll() {
+      const r = await fetch(apiUrl("/api/stop-all"), { method: "POST" });
+      if (r.ok) refreshStatus();
+    }
+
+    btnMotors.addEventListener("click", handleMotorToggle);
+    btnPumps.addEventListener("click", handlePumpToggle);
+    btnStopAll.addEventListener("click", handleStopAll);
 
     refreshStatus();
     setInterval(refreshStatus, 8000);

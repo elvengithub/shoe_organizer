@@ -52,6 +52,13 @@ PUMP_GPIO = 16
 FAN_GPIO = 17
 ACTUATOR_POLL_MS = 500
 RELAY_ON_IS_HIGH = True
+# Dashboard per-slot fans: GET /api/esp32/camera-relays → extra_relay_on (length 6).
+# Indices 0–4 → slots 2–6 (see shoe_organizer slot_fan_state.py); index 5 reserved — repeat a spare/off GPIO if unused.
+# Leave () to disable — without this poll, Flask still stores dashboard toggles but no ESP GPIO follows them.
+EXTRA_RELAYS_POLL_MS = 600
+EXTRA_RELAY_GPIOS = ()  # e.g. (32, 33, 25, 26, 27, 36) once wired — must be exactly six ints or ()
+
+_extra_slot_pins = []
 
 TRIG_PINS = [5, 21, 22, 25, 2]
 ECHO_PINS = [18, 19, 23, 26, 15]
@@ -146,6 +153,40 @@ def set_pump_fan(on):
     v = _relay_drive_level(bool(on))
     pump_out.value(v)
     fan_out.value(v)
+
+
+def fetch_camera_relays():
+    """GET /api/esp32/camera-relays — per-slot dashboard fan bits (extra_relay_on)."""
+    if urequests is None or not wlan_connected():
+        return None
+    gc.collect()
+    url = _http_base(SERVER_BASE) + "/api/esp32/camera-relays"
+    try:
+        r = urequests.get(url, headers={"Connection": "close"})
+        try:
+            code = getattr(r, "status_code", 200)
+            if not (200 <= code < 300):
+                return None
+            txt = r.text
+        finally:
+            r.close()
+        return json.loads(txt)
+    except OSError:
+        return None
+    except ValueError:
+        return None
+
+
+def apply_extra_slot_relays(bits):
+    """Drive GPIOs from Flask extra_relay_on (booleans). Safe no-op when EXTRA_RELAY_GPIOS unset."""
+    if not _extra_slot_pins or not isinstance(bits, list):
+        return
+    for i in range(min(len(bits), len(_extra_slot_pins))):
+        try:
+            on = bool(bits[i])
+        except (TypeError, ValueError):
+            on = False
+        _extra_slot_pins[i].value(_relay_drive_level(on))
 
 
 def fetch_actuators():
@@ -330,10 +371,29 @@ def main():
         print("Flask reachable at", _http_base(SERVER_BASE))
     elif wlan_connected() and urequests:
         print("WiFi OK but Flask not reachable — check SERVER_BASE, PC firewall port 8080, and that Flask is running (host 0.0.0.0).")
+    _extra_slot_pins.clear()
+    if len(EXTRA_RELAY_GPIOS) == 6:
+        for g in EXTRA_RELAY_GPIOS:
+            try:
+                _extra_slot_pins.append(Pin(int(g), Pin.OUT, value=_relay_drive_level(False)))
+            except (OSError, TypeError, ValueError) as e:
+                print("EXTRA_RELAY_GPIOS Pin error:", e)
+                _extra_slot_pins.clear()
+                break
+        if len(_extra_slot_pins) == 6:
+            print(
+                "Per-slot relay GPIOs:",
+                EXTRA_RELAY_GPIOS,
+                "(dashboard → GET /api/esp32/camera-relays)",
+            )
+    elif len(EXTRA_RELAY_GPIOS) not in (0,):
+        print("EXTRA_RELAY_GPIOS must be () or a tuple/list of exactly 6 GPIO numbers")
+
     last_post = 0
     last_dht_ms = 0
     last_wifi_try = time.ticks_ms()
     last_actuator_poll = 0
+    last_camera_relays_poll = 0
     last_actuator_status = None
     print("\033[?25l", end="")
 
@@ -364,6 +424,20 @@ def main():
             else:
                 last_actuator_status = None
                 set_pump_fan(False)
+
+        if (
+            EXTRA_RELAYS_POLL_MS > 0
+            and len(_extra_slot_pins) == 6
+            and urequests
+            and wlan_connected()
+            and time.ticks_diff(now, last_camera_relays_poll) >= EXTRA_RELAYS_POLL_MS
+        ):
+            last_camera_relays_poll = now
+            cr = fetch_camera_relays()
+            if cr and cr.get("ok") and isinstance(cr.get("extra_relay_on"), list):
+                apply_extra_slot_relays(cr.get("extra_relay_on"))
+            else:
+                apply_extra_slot_relays([False] * 6)
 
         if time.ticks_ms() - last_dht_ms > 2000:
             for i in range(5):

@@ -127,6 +127,16 @@ esp32_telemetry:
     port: auto
     baud: 115200
 
+# Wash bay (ESP32 polls GET /api/esp32/actuators): timed pump + motor sequence when camera sees a dirty shoe.
+# Map pump1_on → GPIO 19, pump2_on → GPIO 21, motors_on → GPIO 16–18 on your relay firmware.
+wash_actuators:
+  initial_delay_s: 15
+  pump1_run_s: 7
+  motors_run_s: 30
+  pump2_run_s: 10
+  motors_second_run_s: 30
+  repeat_cycles: 3
+
 # Flask (touch LCD shows this in Chromium kiosk)
 server:
   host: 0.0.0.0

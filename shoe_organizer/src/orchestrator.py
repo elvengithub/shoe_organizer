@@ -20,6 +20,7 @@ from .shoe_taxonomy import (
 from .shoe_type_smoothing import ShoeTypeSmoother
 from .text_presence import analyze_presented_text
 from .vision_service import ShoeCategory, VisionResult, WebcamCapture
+from .wash_actuator_sequence import WashBayActuatorSequence
 from .wash_decision import WashPlan, decide_wash, wash_ui_label
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,23 @@ class ShoeOrganizerOrchestrator:
         self._serial_bridge = SerialBridge(self.cfg)
         self._serial_bridge.start()
         self._active_routing: _ActiveRouting | None = None
+        self._wash_seq = WashBayActuatorSequence(self.cfg)
+
+    def _esp32_actuator_quiet(self) -> dict:
+        """Turn off wash outputs and reset the timed sequence (camera lost / errors / text mode)."""
+        self._wash_seq.force_idle()
+        return {
+            "pump1_on": False,
+            "pump2_on": False,
+            "motors_on": False,
+            "wash_sequence_state": "idle",
+            "wash_sequence_phase": None,
+            "wash_sequence_cycle": None,
+            "wash_sequence_cycle_index": 0,
+            "wash_sequence_repeat_total": self._wash_seq.repeat_total,
+            "pump_on": False,
+            "fan_on": False,
+        }
 
     def _set_active_routing(
         self,
@@ -194,9 +212,12 @@ class ShoeOrganizerOrchestrator:
                     catalog_style=cs,
                     catalog_score=csc,
                 )
+            from .slot_fan_state import set_slot_fan
             for cid in self.cfg["compartments"]["storage_ids"]:
                 self.sensors.set_ventilation(cid, False)
+                set_slot_fan(cid, False)
             self.sensors.set_ventilation(slot, True)
+            set_slot_fan(slot, True)
             self._set_active_routing(slot, wash, shoe_cat, cc, cs, motion_error=False)
             return CycleResult(
                 wash,
@@ -312,9 +333,12 @@ class ShoeOrganizerOrchestrator:
                 sports_fusion_score=fus_dbg,
                 sports_fusion_threshold=fus_thr_dbg,
             )
+        from .slot_fan_state import set_slot_fan
         for cid in self.cfg["compartments"]["storage_ids"]:
             self.sensors.set_ventilation(cid, False)
+            set_slot_fan(cid, False)
         self.sensors.set_ventilation(slot, True)
+        set_slot_fan(slot, True)
         self._set_active_routing(slot, wash, det.get("shoe_category"), cc, cs, motion_error=False)
         return CycleResult(
             wash,
@@ -348,9 +372,10 @@ class ShoeOrganizerOrchestrator:
 
     def esp32_actuator_snapshot(self) -> dict:
         """
-        One-frame shoe presence for ESP32 pump/fan. Does not call classification stability
-        (avoids interfering with /api/camera/analyze state).
+        One-frame shoe presence for ESP32 plus timed wash sequence (pump1 / motors / pump2 / motors × N).
+        Does not call classification stability (avoids interfering with /api/camera/analyze state).
         """
+        quiet = self._esp32_actuator_quiet()
         if self._text_mode():
             return {
                 "ok": True,
@@ -358,8 +383,7 @@ class ShoeOrganizerOrchestrator:
                 "shoe_detected": False,
                 "shoe_clean": False,
                 "status": "idle",
-                "pump_on": False,
-                "fan_on": False,
+                **quiet,
             }
         frame = self.cam.read()
         if frame is None:
@@ -370,13 +394,12 @@ class ShoeOrganizerOrchestrator:
                 "shoe_detected": False,
                 "shoe_clean": False,
                 "status": "idle",
-                "pump_on": False,
-                "fan_on": False,
                 "message": (
                     "Waiting for ESP32 camera frame…"
                     if src == "esp32"
                     else "No camera frame — check USB or POST /api/camera/frame"
                 ),
+                **quiet,
             }
         _v, _w, detail = analyze_shoe_and_wash_from_bgr(frame)
         if detail.get("reject_stage") == "pipeline_error":
@@ -386,22 +409,20 @@ class ShoeOrganizerOrchestrator:
                 "shoe_detected": False,
                 "shoe_clean": False,
                 "status": "idle",
-                "pump_on": False,
-                "fan_on": False,
+                **quiet,
             }
         raw = bool(detail.get("raw_is_shoe", detail.get("is_shoe", False)))
         wash_mode = str(detail.get("wash_mode") or "").strip().lower()
         shoe_clean = bool(raw and wash_mode == "none")
-        run_motors = bool(raw and not shoe_clean)
         st = "clean" if shoe_clean else ("wash" if raw else "idle")
+        seq = self._wash_seq.tick(raw_shoe=raw, shoe_clean=shoe_clean)
         return {
             "ok": True,
             "error": None,
             "shoe_detected": raw,
             "shoe_clean": shoe_clean,
             "status": st,
-            "pump_on": run_motors,
-            "fan_on": run_motors,
+            **seq,
         }
 
     def analyze_text_live(self, description: str) -> dict:
