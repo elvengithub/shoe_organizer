@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=17" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18" />
 </head>
 <body>
   <header class="site-header">
@@ -77,6 +77,10 @@
             </div>
           </div>
           <div class="camera-controls">
+            <div class="mode-toggle">
+              <button type="button" id="btn-mode-manual" class="control-btn mode-btn" aria-pressed="true">Manual</button>
+              <button type="button" id="btn-mode-auto" class="control-btn mode-btn" aria-pressed="false">Auto</button>
+            </div>
             <button type="button" id="btn-toggle-motors" class="control-btn" aria-pressed="false">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
               Motors
@@ -165,6 +169,8 @@
     const btnMotors = document.getElementById("btn-toggle-motors");
     const btnPumps = document.getElementById("btn-toggle-pumps");
     const btnStopAll = document.getElementById("btn-stop-all");
+    const btnManual = document.getElementById("btn-mode-manual");
+    const btnAuto = document.getElementById("btn-mode-auto");
 
     const tempWarningModalEl = document.getElementById("temp-warning-modal");
     const tempWarningMessageEl = document.getElementById("temp-warning-message");
@@ -577,6 +583,20 @@
       btnPumps.setAttribute("aria-pressed", gp);
       btnPumps.classList.toggle("is-active", gp);
 
+      const mode = (resp.mode || "MANUAL").toUpperCase();
+      const isAuto = (mode === "AUTO");
+      
+      btnManual.classList.toggle("is-active", mode === "MANUAL");
+      btnManual.setAttribute("aria-pressed", mode === "MANUAL");
+      btnAuto.classList.toggle("is-active", mode === "AUTO");
+      btnAuto.setAttribute("aria-pressed", mode === "AUTO");
+
+      // Disable manual buttons in Auto mode
+      btnMotors.disabled = isAuto;
+      btnPumps.disabled = isAuto;
+      btnMotors.classList.toggle("is-disabled", isAuto);
+      btnPumps.classList.toggle("is-disabled", isAuto);
+
       gridEl.innerHTML = "";
       for (const [id, row] of Object.entries(data)) {
         const card = document.createElement("article");
@@ -765,6 +785,7 @@
     });
 
     async function handleMotorToggle() {
+      if (btnManual.classList.contains("is-disabled")) return; 
       const currentlyOn = btnMotors.getAttribute("aria-pressed") === "true";
       const nextOn = !currentlyOn;
       const r = await fetch(apiUrl("/api/motors"), {
@@ -776,6 +797,7 @@
     }
 
     async function handlePumpToggle() {
+      if (btnPumps.classList.contains("is-disabled")) return;
       const currentlyOn = btnPumps.getAttribute("aria-pressed") === "true";
       const nextOn = !currentlyOn;
       const r = await fetch(apiUrl("/api/pumps"), {
@@ -791,9 +813,20 @@
       if (r.ok) refreshStatus();
     }
 
+    async function handleModeChange(m) {
+      const r = await fetch(apiUrl("/api/esp32/mode"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: m }),
+      });
+      if (r.ok) refreshStatus();
+    }
+
     btnMotors.addEventListener("click", handleMotorToggle);
     btnPumps.addEventListener("click", handlePumpToggle);
     btnStopAll.addEventListener("click", handleStopAll);
+    btnManual.addEventListener("click", () => handleModeChange("MANUAL"));
+    btnAuto.addEventListener("click", () => handleModeChange("AUTO"));
 
     refreshStatus();
     setInterval(refreshStatus, 8000);

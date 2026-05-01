@@ -32,7 +32,7 @@ class _Step:
 class WashBayActuatorSequence:
     def __init__(self, cfg: dict) -> None:
         block = cfg.get("wash_actuators") or {}
-        self._initial_delay_s = float(block.get("initial_delay_s", 15.0))
+        self._initial_delay_s = float(block.get("initial_delay_s", 0.1))
         self._pump1_run_s = float(block.get("pump1_run_s", 7.0))
         self._motors_run_s = float(block.get("motors_run_s", 30.0))
         self._pump2_run_s = float(block.get("pump2_run_s", 10.0))
@@ -69,9 +69,13 @@ class WashBayActuatorSequence:
         now = time.monotonic()
 
         with self._lock:
+            # Only reset if we are idle or if the shoe has been missing for a while
             if not raw_shoe or shoe_clean:
-                self._reset()
-                return self._snapshot(False, False, False, "idle", None, None, 0)
+                if self._state == "idle":
+                    self._reset()
+                # If we were running, we DON'T reset immediately. 
+                # We wait for the sequence to finish or for a longer timeout elsewhere.
+                return self._snapshot(False, False, False, self._state, None, None, self._cycle)
 
             if self._state == "finished":
                 return self._snapshot(

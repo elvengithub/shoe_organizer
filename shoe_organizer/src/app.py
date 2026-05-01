@@ -19,6 +19,8 @@ from .slot_fan_state import (
     set_global_pumps,
     get_global_pumps,
     stop_all_actuators,
+    get_esp32_mode,
+    set_esp32_mode,
 )
 from .orchestrator import ShoeOrganizerOrchestrator
 from .text_presence import analyze_presented_text
@@ -114,6 +116,8 @@ def create_app() -> Flask:
         val, err = _parse_json_on(body)
         if err:
             return jsonify({"ok": False, "error": err}), 400
+        if get_esp32_mode() == "AUTO":
+            return jsonify({"ok": False, "error": "manual_control_disabled_in_auto_mode"}), 403
         set_global_motors(val)
         return jsonify({"ok": True, "motors_on": val})
 
@@ -123,6 +127,8 @@ def create_app() -> Flask:
         val, err = _parse_json_on(body)
         if err:
             return jsonify({"ok": False, "error": err}), 400
+        if get_esp32_mode() == "AUTO":
+            return jsonify({"ok": False, "error": "manual_control_disabled_in_auto_mode"}), 403
         set_global_pumps(val)
         return jsonify({"ok": True, "pumps_on": val})
 
@@ -340,6 +346,7 @@ def create_app() -> Flask:
         if res.get("ok"):
             res["motors_on"] = bool(res.get("motors_on") or get_global_motors())
             res["pumps_on"] = bool(res.get("pumps_on") or get_global_pumps())
+            res["mode"] = get_esp32_mode()
         return jsonify(res)
 
     @app.get("/api/esp32/camera-relays")
@@ -362,6 +369,7 @@ def create_app() -> Flask:
                 "motors_on": get_global_motors(),
                 "pumps_on": get_global_pumps(),
                 "extra_relay_on": bits,
+                "mode": get_esp32_mode(),
             }
         )
 
@@ -370,6 +378,20 @@ def create_app() -> Flask:
         o = orch()
         storage_ids = list(o.cfg["compartments"]["storage_ids"])
         return jsonify({"ok": True, "slots": snapshot_slots(storage_ids)})
+
+    @app.get("/api/esp32/mode")
+    def esp32_mode_get():
+        return jsonify({"ok": True, "mode": get_esp32_mode()})
+
+    @app.post("/api/esp32/mode")
+    def esp32_mode_post():
+        body = request.get_json(force=True, silent=True) or {}
+        mode = str(body.get("mode") or "").upper()
+        if mode not in ("MANUAL", "AUTO"):
+            return jsonify({"ok": False, "error": "invalid_mode"}), 400
+        set_esp32_mode(mode)
+        log.info("esp32 mode changed UI: %s", mode)
+        return jsonify({"ok": True, "mode": mode})
 
     @app.post("/api/slot-fans")
     def api_slot_fans_post():
@@ -500,7 +522,8 @@ def create_app() -> Flask:
             "ok": True,
             "slots": snap,
             "global_motors_on": gm,
-            "global_pumps_on": gp
+            "global_pumps_on": gp,
+            "mode": get_esp32_mode(),
         })
 
     @app.post("/api/vent")

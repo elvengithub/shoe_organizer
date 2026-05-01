@@ -15,6 +15,7 @@ _state: dict[int, bool] = {}
 # Global forced states (e.g. from manual UI override)
 _motors_forced_on = False
 _pumps_forced_on = False
+_esp32_mode = "MANUAL"
 
 
 def set_slot_fan(compartment_id: int, on: bool) -> None:
@@ -87,10 +88,22 @@ def get_global_pumps() -> bool:
         return _pumps_forced_on
 
 
+def set_esp32_mode(mode: str) -> None:
+    global _esp32_mode
+    with _lock:
+        _esp32_mode = str(mode).upper()
+
+
+def get_esp32_mode() -> str:
+    with _lock:
+        return _esp32_mode
+
+
 def stop_all_actuators() -> None:
     """Force all fans, motors, and pumps OFF."""
-    global _motors_forced_on, _pumps_forced_on
+    global _motors_forced_on, _pumps_forced_on, _esp32_mode
     with _lock:
         _state.clear()
         _motors_forced_on = False
         _pumps_forced_on = False
+        # We don't reset the mode on stop-all, usually.

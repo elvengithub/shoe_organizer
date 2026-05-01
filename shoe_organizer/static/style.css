@@ -1692,3 +1692,24 @@ body.slot-modal-open {
   border-color: transparent;
   box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
 }
+
+.mode-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-right: 1rem;
+  padding-right: 1rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.mode-btn.is-active {
+  background: var(--accent) !important;
+  color: #fff !important;
+  box-shadow: 0 0 12px rgba(61, 156, 245, 0.4);
+}
+
+.control-btn.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(1);
+  pointer-events: none;
+}

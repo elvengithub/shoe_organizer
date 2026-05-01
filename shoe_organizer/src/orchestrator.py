@@ -337,8 +337,11 @@ class ShoeOrganizerOrchestrator:
         for cid in self.cfg["compartments"]["storage_ids"]:
             self.sensors.set_ventilation(cid, False)
             set_slot_fan(cid, False)
-        self.sensors.set_ventilation(slot, True)
-        set_slot_fan(slot, True)
+        
+        # Only turn on the fan immediately if no wash is needed
+        if str(wash.mode).lower() == "none":
+            self.sensors.set_ventilation(slot, True)
+            set_slot_fan(slot, True)
         self._set_active_routing(slot, wash, det.get("shoe_category"), cc, cs, motion_error=False)
         return CycleResult(
             wash,

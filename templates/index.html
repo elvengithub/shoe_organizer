@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=13" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18" />
 </head>
 <body>
   <header class="site-header">
@@ -50,6 +50,31 @@
   </header>
 
   <main>
+    <section class="actuator-panel" aria-label="Manual and Automatic actuator controls">
+      <div class="reg-row">
+        <div class="actuator-group">
+          <span class="reg-label">System Mode</span>
+          <div class="actuator-btns">
+            <button type="button" class="reg-btn" id="mode-manual-btn">Manual</button>
+            <button type="button" class="reg-btn" id="mode-auto-btn">Auto</button>
+          </div>
+        </div>
+        <div class="actuator-group">
+          <span class="reg-label">Direct Control</span>
+          <div class="actuator-btns">
+            <button type="button" class="reg-btn" id="pump-toggle-btn">Pumps</button>
+            <button type="button" class="reg-btn" id="motor-toggle-btn">Motors</button>
+          </div>
+        </div>
+        <div class="actuator-group">
+          <span class="reg-label">Emergency</span>
+          <div class="actuator-btns">
+            <button type="button" class="reg-btn reg-btn-stop" id="stop-all-btn">STOP ALL</button>
+          </div>
+        </div>
+      </div>
+      <p id="actuator-status" class="register-status" aria-live="polite"></p>
+    </section>
     <section class="camera-panel" aria-label="Main bay camera preview">
       <div class="bay-layout">
         <div class="camera-frame">
@@ -395,6 +420,84 @@
     setInterval(refreshStatus, 8000);
     refreshAiCamera();
     setInterval(refreshAiCamera, 1100);
+
+    // --- Actuator Controls ---
+    const btnManual = document.getElementById("mode-manual-btn");
+    const btnAuto = document.getElementById("mode-auto-btn");
+    const btnPump = document.getElementById("pump-toggle-btn");
+    const btnMotor = document.getElementById("motor-toggle-btn");
+    const btnStop = document.getElementById("stop-all-btn");
+    const actStatusEl = document.getElementById("actuator-status");
+
+    let currentMode = "MANUAL";
+    let pumpsOn = false;
+    let motorsOn = false;
+
+    async function setMode(m) {
+      try {
+        const r = await fetch("/api/esp32/mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: m })
+        });
+        const j = await r.json();
+        if (j.ok) {
+          currentMode = j.mode;
+          updateActuatorUI();
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    async function toggleActuator(type, currentVal) {
+      const endpoint = type === "pump" ? "/api/pumps" : "/api/motors";
+      try {
+        const r = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ on: !currentVal })
+        });
+        const j = await r.json();
+        if (j.ok) {
+          if (type === "pump") pumpsOn = j.pumps_on;
+          else motorsOn = j.motors_on;
+          updateActuatorUI();
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    function updateActuatorUI() {
+      btnManual.classList.toggle("active", currentMode === "MANUAL");
+      btnAuto.classList.toggle("active", currentMode === "AUTO");
+      btnPump.classList.toggle("active", pumpsOn);
+      btnMotor.classList.toggle("active", motorsOn);
+      
+      actStatusEl.textContent = `Mode: ${currentMode} | Pumps: ${pumpsOn ? "ON" : "OFF"} | Motors: ${motorsOn ? "ON" : "OFF"}`;
+    }
+
+    btnManual.addEventListener("click", () => setMode("MANUAL"));
+    btnAuto.addEventListener("click", () => setMode("AUTO"));
+    btnPump.addEventListener("click", () => toggleActuator("pump", pumpsOn));
+    btnMotor.addEventListener("click", () => toggleActuator("motor", motorsOn));
+    btnStop.addEventListener("click", async () => {
+      await fetch("/api/stop-all", { method: "POST" });
+      refreshActuatorState();
+    });
+
+    async function refreshActuatorState() {
+      try {
+        const r = await fetch("/api/esp32/actuators");
+        const j = await r.json();
+        if (j.ok) {
+          currentMode = j.mode || "MANUAL";
+          pumpsOn = !!j.pumps_on;
+          motorsOn = !!j.motors_on;
+          updateActuatorUI();
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    refreshActuatorState();
+    setInterval(refreshActuatorState, 2000);
   </script>
 </body>
 </html>
