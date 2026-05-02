@@ -424,6 +424,7 @@ class ShoeOrganizerOrchestrator:
             "error": None,
             "shoe_detected": raw,
             "shoe_clean": shoe_clean,
+            "wash_mode": wash_mode,
             "status": st,
             **seq,
         }

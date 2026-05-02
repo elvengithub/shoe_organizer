@@ -110,9 +110,9 @@ class WashBayActuatorSequence:
                     self._repeat_cycles,
                 )
 
-            p1, p2, m, phase = self._outputs_for_current()
+            p1, p2, m, phase, countdown = self._outputs_for_current(now)
             cycle_ui = None if phase == "initial_delay" else self._cycle + 1
-            return self._snapshot(p1, p2, m, "running", phase, cycle_ui, self._cycle)
+            return self._snapshot(p1, p2, m, "running", phase, cycle_ui, self._cycle, countdown)
 
     def _reset(self) -> None:
         self._state = "idle"
@@ -146,11 +146,12 @@ class WashBayActuatorSequence:
 
             self._phase_deadline = now + self._steps[self._step_i].duration_s
 
-    def _outputs_for_current(self) -> tuple[bool, bool, bool, str]:
+    def _outputs_for_current(self, now: float) -> tuple[bool, bool, bool, str, int | None]:
         if self._in_initial:
-            return False, False, False, "initial_delay"
+            rem = max(0, int(self._phase_deadline - now + 0.99))
+            return False, False, False, "initial_delay", rem
         st = self._steps[self._step_i]
-        return st.pump1, st.pump2, st.motors, st.name
+        return st.pump1, st.pump2, st.motors, st.name, None
 
     def _snapshot(
         self,
@@ -161,6 +162,7 @@ class WashBayActuatorSequence:
         phase: str | None,
         cycle_1based: int | None,
         cycle_0based: int,
+        countdown: int | None = None,
     ) -> dict[str, object]:
         legacy = bool(p1 or p2 or motors)
         return {
@@ -172,6 +174,7 @@ class WashBayActuatorSequence:
             "wash_sequence_cycle": cycle_1based,
             "wash_sequence_cycle_index": cycle_0based,
             "wash_sequence_repeat_total": self._repeat_cycles,
+            "wash_sequence_countdown": countdown,
             "pump_on": legacy,
             "fan_on": False,
         }

@@ -304,7 +304,12 @@
         if (j.error === "stabilizing") {
           overlayEl.classList.add("ai-stabilizing");
           shoeEl.textContent = j.shoe_type_label || j.shoe_category || "Confirming shoe…";
-          washEl.textContent = j.wash_label || j.wash_mode || "—";
+          const cdStab = j.wash_sequence_countdown;
+          if (cdStab != null && cdStab > 0) {
+              washEl.textContent = `Starts in ${cdStab}s`;
+          } else {
+              washEl.textContent = j.wash_label || j.wash_mode || "—";
+          }
           reasonEl.textContent = j.message || "Hold steady…";
           const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
           const dbgLine =
@@ -323,7 +328,14 @@
           return;
         }
         shoeEl.textContent = j.shoe_type_label || j.shoe_category || "—";
-        washEl.textContent = j.wash_label || j.wash_mode || "—";
+        const cd = j.wash_sequence_countdown;
+        if (cd != null && cd > 0) {
+            washEl.textContent = `Starts in ${cd}s`;
+            washChipEl.classList.add("wash-countdown"); // Optional: add a class for styling
+        } else {
+            washEl.textContent = j.wash_label || j.wash_mode || "—";
+            washChipEl.classList.remove("wash-countdown");
+        }
         reasonEl.textContent = j.wash_reason ? String(j.wash_reason) : "";
         const cat = j.catalog_category && j.catalog_style ? `${j.catalog_category} · ${j.catalog_style}` : "";
         const dbgLineOk =
