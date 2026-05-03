@@ -19,6 +19,8 @@ try:
 except ImportError:
     network = None
 
+import _thread
+
 
 def _http_base(url):
     """Normalize URL (fix ttp:// typo) for urequests."""
@@ -186,7 +188,14 @@ def apply_extra_slot_relays(bits):
             on = bool(bits[i])
         except (TypeError, ValueError):
             on = False
-        _extra_slot_pins[i].value(_relay_drive_level(on))
+        
+        target = _relay_drive_level(on)
+        # Only stagger if we are actually turning a fan ON that was OFF
+        if _extra_slot_pins[i].value() != target:
+            _extra_slot_pins[i].value(target)
+            if on:
+                # Small delay to prevent current surge from 5 fans starting at once
+                time.sleep_ms(200)
 
 
 def fetch_actuators():
@@ -395,6 +404,27 @@ def main():
     last_actuator_poll = 0
     last_camera_relays_poll = 0
     last_actuator_status = None
+    
+    # Staggered DHT logic
+    dht_index = 0
+    consecutive_poll_failures = 0
+    MAX_POLL_FAILURES = 3
+    
+    def dht_thread():
+        nonlocal dht_index
+        while True:
+            try:
+                # Measure one DHT every 3 seconds in the background
+                dhts[dht_index].measure()
+                temps[dht_index] = dhts[dht_index].temperature()
+                hums[dht_index] = dhts[dht_index].humidity()
+                dht_index = (dht_index + 1) % 5
+            except:
+                pass
+            time.sleep(3)
+
+    _thread.start_new_thread(dht_thread, ())
+    
     print("\033[?25l", end="")
 
     while True:
@@ -435,19 +465,14 @@ def main():
             last_camera_relays_poll = now
             cr = fetch_camera_relays()
             if cr and cr.get("ok") and isinstance(cr.get("extra_relay_on"), list):
+                consecutive_poll_failures = 0
                 apply_extra_slot_relays(cr.get("extra_relay_on"))
             else:
-                apply_extra_slot_relays([False] * 6)
+                consecutive_poll_failures += 1
+                if consecutive_poll_failures >= MAX_POLL_FAILURES:
+                    apply_extra_slot_relays([False] * 6)
 
-        if time.ticks_ms() - last_dht_ms > 2000:
-            for i in range(5):
-                try:
-                    dhts[i].measure()
-                    temps[i] = dhts[i].temperature()
-                    hums[i] = dhts[i].humidity()
-                except OSError:
-                    temps[i], hums[i] = None, None
-            last_dht_ms = time.ticks_ms()
+        # DHT measurements now handled by background thread to avoid blocking
 
         compartments = {}
         for i in range(5):

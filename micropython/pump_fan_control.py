@@ -98,7 +98,7 @@ def try_wifi():
 # -----------------------
 MODE = "MANUAL"
 
-SAFETY_LIMIT = 10
+SAFETY_LIMIT = 1800  # 30 minutes safety cap for continuous run
 
 pump_on_time = None
 fan_on_time = None

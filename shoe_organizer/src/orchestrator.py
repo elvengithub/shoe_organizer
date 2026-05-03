@@ -212,9 +212,7 @@ class ShoeOrganizerOrchestrator:
                     catalog_style=cs,
                     catalog_score=csc,
                 )
-            for cid in self.cfg["compartments"]["storage_ids"]:
-                self.sensors.set_ventilation(cid, False)
-                set_slot_fan(cid, False)
+            # Only turn on the fan for the assigned slot, don't force others OFF
             self.sensors.set_ventilation(slot, True)
             set_slot_fan(slot, True)
             self._set_active_routing(slot, wash, shoe_cat, cc, cs, motion_error=False)
@@ -333,9 +331,7 @@ class ShoeOrganizerOrchestrator:
                 sports_fusion_threshold=fus_thr_dbg,
             )
         from .slot_fan_state import set_slot_fan
-        for cid in self.cfg["compartments"]["storage_ids"]:
-            self.sensors.set_ventilation(cid, False)
-            set_slot_fan(cid, False)
+        # Only turn on the fan for the assigned slot later, don't force others OFF here
         
         # Only turn on the fan immediately if no wash is needed
         if str(wash.mode).lower() == "none":
