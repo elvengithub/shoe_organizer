@@ -688,12 +688,8 @@
             ? esc(String(row.ultrasonic_max_cm))
             : "75";
         const orderRaw = row.order_status != null && row.order_status !== "" ? String(row.order_status) : "—";
-        const headline =
-          orderRaw !== "—"
-            ? esc(orderRaw)
-            : row.occupied
-              ? "Occupied · storage bay"
-              : "Available · ready for placement";
+        const headlineText = orderRaw !== "—" ? orderRaw : (row.occupied ? "Occupied" : "Available");
+        const headlineClass = row.occupied ? "is-occupied" : "is-available";
         const tags = [];
         tags.push(occText);
         if (espLive) tags.push("ESP32 live");
@@ -734,7 +730,7 @@
             <strong>Slot ${esc(String(id))}</strong>
             <span>${espByline}</span>
           </div>
-          <h3 class="slot-card__headline">${headline}</h3>
+          <h3 class="slot-card__headline ${headlineClass}">${esc(headlineText)}</h3>
           <div class="slot-card__tags">${tagsHtml}</div>
           <div class="slot-card__fan" role="group" aria-label="Storage fan for slot ${esc(String(id))}">
             <div class="slot-card__fan-row">

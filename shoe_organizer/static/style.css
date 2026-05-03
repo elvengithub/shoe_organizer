@@ -738,6 +738,14 @@ main {
   overflow: hidden;
 }
 
+.slot-card__headline.is-available {
+  color: #16a34a;
+}
+
+.slot-card__headline.is-occupied {
+  color: #dc2626;
+}
+
 .slot-card__tags {
   display: flex;
   flex-wrap: wrap;
