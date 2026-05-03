@@ -1,180 +1,206 @@
-"""
-Timed wash-bay actuator schedule for ESP32 (or any client) polling GET /api/esp32/actuators.
-
-When the camera reports a dirty shoe (needs wash), a sequence runs:
-  • Initial delay (all outputs off)
-  • Repeat ``repeat_cycles`` times:
-      pump1 on → motors on → pump2 on → motors on
-  Timings are configurable under ``wash_actuators`` in config.yaml.
-
-Outputs are mutually exclusive per step (only the named actuators are on).
-Thread-safe for Flask threaded server.
-"""
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class _Step:
-    name: str
-    duration_s: float
-    pump1: bool
-    pump2: bool
-    motors: bool
-
-
 class WashBayActuatorSequence:
-    def __init__(self, cfg: dict) -> None:
-        block = cfg.get("wash_actuators") or {}
-        self._initial_delay_s = float(block.get("initial_delay_s", 0.1))
-        self._pump1_run_s = float(block.get("pump1_run_s", 7.0))
-        self._motors_run_s = float(block.get("motors_run_s", 30.0))
-        self._pump2_run_s = float(block.get("pump2_run_s", 10.0))
-        self._motors_second_run_s = float(block.get("motors_second_run_s", 30.0))
-        self._repeat_cycles = max(1, int(block.get("repeat_cycles", 3)))
-
-        self._steps: list[_Step] = [
-            _Step("pump1", self._pump1_run_s, True, False, False),
-            _Step("motors_1", self._motors_run_s, False, False, True),
-            _Step("pump2", self._pump2_run_s, False, True, False),
-            _Step("motors_2", self._motors_second_run_s, False, False, True),
-        ]
-
+    def __init__(self, block: dict):
         self._lock = threading.Lock()
-        self._state: str = "idle"  # idle | running | finished
-        self._in_initial: bool = False
-        self._cycle: int = 0
-        self._step_i: int = 0
-        self._phase_deadline: float = 0.0
-
-    @property
-    def repeat_total(self) -> int:
-        return self._repeat_cycles
-
-    def force_idle(self) -> None:
-        """All off; ready for a new run after shoe clears and returns."""
-        with self._lock:
-            self._reset()
-
-    def tick(self, *, raw_shoe: bool, shoe_clean: bool) -> dict[str, object]:
-        """
-        Call on each actuator poll. ``shoe_clean`` means shoe present but wash_mode none.
-        """
-        now = time.monotonic()
-
-        with self._lock:
-            # Only reset if we are idle or if the shoe has been missing for a while
-            if not raw_shoe or shoe_clean:
-                if self._state == "idle":
-                    self._reset()
-                # If we were running, we DON'T reset immediately. 
-                # We wait for the sequence to finish or for a longer timeout elsewhere.
-                return self._snapshot(False, False, False, self._state, None, None, self._cycle)
-
-            if self._state == "finished":
-                return self._snapshot(
-                    False,
-                    False,
-                    False,
-                    "finished_waiting_clear",
-                    None,
-                    None,
-                    self._repeat_cycles,
-                )
-
-            if self._state == "idle":
-                self._start(now)
-                log.info(
-                    "wash sequence: started (%s cycles after %.1fs delay)",
-                    self._repeat_cycles,
-                    self._initial_delay_s,
-                )
-
-            self._advance(now)
-
-            if self._state == "finished":
-                log.info("wash sequence: completed %s cycles — idle until shoe clears", self._repeat_cycles)
-                return self._snapshot(
-                    False,
-                    False,
-                    False,
-                    "finished_waiting_clear",
-                    None,
-                    None,
-                    self._repeat_cycles,
-                )
-
-            p1, p2, m, phase, countdown = self._outputs_for_current(now)
-            cycle_ui = None if phase == "initial_delay" else self._cycle + 1
-            return self._snapshot(p1, p2, m, "running", phase, cycle_ui, self._cycle, countdown)
-
-    def _reset(self) -> None:
+        self._initial_delay_s = float(block.get("initial_delay_s", 10))
+        
+        # Base timings from config (or defaults)
+        self._p1_time = float(block.get("pump1_run_s", 8))
+        self._p2_time = float(block.get("pump2_run_s", 5))
+        self._ext_time = 20.0
+        
         self._state = "idle"
         self._in_initial = False
-        self._cycle = 0
+        self._manual_mode_override = None # "soft" | "hard"
         self._step_i = 0
+        self._cycle = 0
         self._phase_deadline = 0.0
 
+    def tick(self, *, raw_shoe: bool, shoe_clean: bool, auto_start: bool = True) -> dict[str, object]:
+        now = time.monotonic()
+        with self._lock:
+            # 1. Auto-start logic (only if enabled and idle)
+            if self._state == "idle" and auto_start and raw_shoe and not shoe_clean:
+                self._manual_mode_override = None # Ensure it's treated as auto
+                self._start(now)
+
+            # 2. Safety check (Removed: Wash now runs to completion once started)
+            # The user requested that it should not interrupt even if shoe is no longer detected.
+            pass
+
+            # 3. Progress sequence
+            if self._state == "running":
+                self._advance(now)
+
+            # 4. Snapshot
+            if self._state == "idle":
+                return self._snapshot(False, False, False, "idle", None, None, 0)
+            
+            if self._state in ("finished", "finished_waiting_clear"):
+                if raw_shoe:
+                    self._state = "finished_waiting_clear"
+                    return self._snapshot(False, False, False, "finished", None, None, 0)
+                else:
+                    self._reset()
+                    return self._snapshot(False, False, False, "idle", None, None, 0)
+
+            # 5. Calculate outputs for 'running'
+            return self._get_running_snapshot(now)
+
     def _start(self, now: float) -> None:
+        p1, p2, ext = self._get_config()
+        print(f"\n>>> [SERVER] WASH SEQUENCE STARTING | Mode: {self._manual_mode_override or 'auto'} | Cycles: {p1}/{p2} | Ext: {ext}")
         self._state = "running"
         self._in_initial = True
-        self._cycle = 0
         self._step_i = 0
+        self._cycle = 0
         self._phase_deadline = now + self._initial_delay_s
 
+    def _reset(self) -> None:
+        if self._state != "idle":
+            print(">>> [SERVER] WASH SEQUENCE RESETTING to idle.")
+        self._state = "idle"
+        self._in_initial = False
+        self._manual_mode_override = None
+        self._step_i = 0
+        self._cycle = 0
+        self._phase_deadline = 0.0
+
+    def _get_config(self):
+        # Returns (p1_max, p2_max, has_extension)
+        if self._manual_mode_override == "hard":
+            return 4, 3, True
+        # Everything else (soft or auto) defaults to 3/2
+        return 3, 2, False
+
     def _advance(self, now: float) -> None:
+        p1_max, p2_max, has_ext = self._get_config()
+        
         while self._state == "running" and now >= self._phase_deadline:
             if self._in_initial:
                 self._in_initial = False
-                self._step_i = 0
-                self._phase_deadline = now + self._steps[0].duration_s
+                self._phase_deadline = now + self._p1_time
+                self._step_i = 1 # Start with P1
                 continue
-
-            self._step_i += 1
-            if self._step_i >= len(self._steps):
+            
+            # Step 1: Pump 1
+            if self._step_i == 1:
+                # Finished P1, check if we need P2
+                if self._cycle < p2_max:
+                    self._step_i = 2
+                    self._phase_deadline = now + self._p2_time
+                    return # Exit to wait for P2 time
+                elif self._cycle + 1 < p1_max:
+                    self._cycle += 1
+                    self._step_i = 1
+                    self._phase_deadline = now + self._p1_time
+                    return # Exit to wait for next P1
+                else:
+                    # All pump cycles done
+                    if has_ext:
+                        self._step_i = 3
+                        self._phase_deadline = now + self._ext_time
+                        return # Exit to wait for EXTENSION
+                    else:
+                        self._state = "finished"
+                        return
+            
+            # Step 2: Pump 2
+            if self._step_i == 2:
+                # Finished P2, always go back to P1 if more cycles left
                 self._cycle += 1
-                self._step_i = 0
-                if self._cycle >= self._repeat_cycles:
-                    self._state = "finished"
+                if self._cycle < p1_max:
+                    self._step_i = 1
+                    self._phase_deadline = now + self._p1_time
                     return
+                else:
+                    if has_ext:
+                        self._step_i = 3
+                        self._phase_deadline = now + self._ext_time
+                        return
+                    else:
+                        self._state = "finished"
+                        return
+            
+            # Step 3: Extension
+            if self._step_i == 3:
+                self._state = "finished"
+                return
 
-            self._phase_deadline = now + self._steps[self._step_i].duration_s
+    def sync_countdown(self, seconds: float) -> None:
+        """Sync the server's DELAY deadline to match the ESP32's timer."""
+        if self._state == "running" and self._step_i == 0:
+            import time
+            new_deadline = time.monotonic() + seconds
+            # Only update if the difference is significant (>0.5s) to avoid jitter
+            if abs(self._phase_deadline - new_deadline) > 0.5:
+                self._phase_deadline = new_deadline
 
-    def _outputs_for_current(self, now: float) -> tuple[bool, bool, bool, str, int | None]:
-        if self._in_initial:
-            rem = max(0, int(self._phase_deadline - now + 0.99))
-            return False, False, False, "initial_delay", rem
-        st = self._steps[self._step_i]
-        return st.pump1, st.pump2, st.motors, st.name, None
+    @property
+    def manual_mode_override(self) -> str | None:
+        return self._manual_mode_override
 
-    def _snapshot(
-        self,
-        p1: bool,
-        p2: bool,
-        motors: bool,
-        seq_state: str,
-        phase: str | None,
-        cycle_1based: int | None,
-        cycle_0based: int,
-        countdown: int | None = None,
-    ) -> dict[str, object]:
-        legacy = bool(p1 or p2 or motors)
+    @property
+    def repeat_total(self) -> int:
+        p1_max, _, _ = self._get_config()
+        return p1_max
+
+    def _get_running_snapshot(self, now: float) -> dict:
+        phase = "initial_delay" if self._in_initial else (
+            "pump1" if self._step_i == 1 else ("pump2" if self._step_i == 2 else "extension")
+        )
+        cd = round(max(0, self._phase_deadline - now))
+        p1_max, _, _ = self._get_config()
+        
+        p1 = (phase == "pump1")
+        p2 = (phase == "pump2")
+        m = (not self._in_initial) # Motor ON during all pumps and extension
+        
         return {
+            "pumps_on": p1 or p2,
             "pump1_on": p1,
             "pump2_on": p2,
-            "motors_on": motors,
+            "motors_on": m,
+            "wash_sequence_state": "running",
+            "wash_sequence_phase": phase,
+            "wash_sequence_cycle": self._cycle + 1,
+            "wash_sequence_total_cycles": p1_max,
+            "wash_sequence_countdown": cd,
+            "wash_trigger_id": getattr(self, "_trigger_id", 0),
+        }
+
+    def _snapshot(self, p1, p2, m, seq_state, phase, cycle, total_cycles, countdown=0) -> dict:
+        return {
+            "pumps_on": p1 or p2,
+            "pump1_on": p1,
+            "pump2_on": p2,
+            "motors_on": m,
             "wash_sequence_state": seq_state,
             "wash_sequence_phase": phase,
-            "wash_sequence_cycle": cycle_1based,
-            "wash_sequence_cycle_index": cycle_0based,
-            "wash_sequence_repeat_total": self._repeat_cycles,
+            "wash_sequence_cycle": cycle,
             "wash_sequence_countdown": countdown,
-            "pump_on": legacy,
-            "fan_on": False,
+            "wash_trigger_id": getattr(self, "_trigger_id", 0),
         }
+
+    def trigger_manual(self, mode: str) -> None:
+        with self._lock:
+            # Forcefully interrupt and restart the sequence!
+            self._manual_mode_override = mode
+            self._trigger_id = getattr(self, "_trigger_id", 0) + 1
+            self._start(time.monotonic())
+
+    def force_idle(self) -> None:
+        with self._lock:
+            self._reset()
+
+    @property
+    def repeat_total(self) -> int:
+        p1_max, _, _ = self._get_config()
+        return p1_max

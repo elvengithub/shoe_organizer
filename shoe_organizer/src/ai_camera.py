@@ -61,7 +61,7 @@ def _try_neural_two_stage(bgr: np.ndarray, cfg: dict) -> tuple[VisionResult | No
 
         return infer_two_stage(bgr, cfg)
     except ImportError as e:
-        log.warning("ai_pipeline enabled but dependencies missing: %s", e)
+        log.debug("ai_pipeline enabled but dependencies missing: %s", e)
         return None, {"ai_pipeline_error": str(e)}
 
 

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=19" />
 </head>
 <body>
   <header class="site-header">
@@ -93,6 +93,10 @@
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>
               Stop All
             </button>
+            <div class="manual-wash-btns">
+              <button type="button" id="btn-wash-gentle" class="control-btn wash-gentle-btn">Gentle Wash</button>
+              <button type="button" id="btn-wash-deep" class="control-btn wash-deep-btn">Deep Wash</button>
+            </div>
           </div>
         </div>
         <section class="grid" id="status-grid" aria-label="Storage slots 2 through 6"></section>
@@ -171,6 +175,8 @@
     const btnStopAll = document.getElementById("btn-stop-all");
     const btnManual = document.getElementById("btn-mode-manual");
     const btnAuto = document.getElementById("btn-mode-auto");
+    const btnWashGentle = document.getElementById("btn-wash-gentle");
+    const btnWashDeep = document.getElementById("btn-wash-deep");
 
     const tempWarningModalEl = document.getElementById("temp-warning-modal");
     const tempWarningMessageEl = document.getElementById("temp-warning-message");
@@ -329,9 +335,23 @@
         }
         shoeEl.textContent = j.shoe_type_label || j.shoe_category || "—";
         const cd = j.wash_sequence_countdown;
-        if (cd != null && cd > 0) {
+        const phase = j.wash_sequence_phase;
+        const cycle = j.wash_sequence_cycle;
+        const total = j.wash_sequence_total_cycles;
+
+        if (cd != null && cd > 0 && phase === "initial_delay") {
             washEl.textContent = `Starts in ${cd}s`;
-            washChipEl.classList.add("wash-countdown"); // Optional: add a class for styling
+            washChipEl.classList.add("wash-countdown");
+        } else if (j.wash_sequence_state === "running") {
+            let label = j.wash_label || j.wash_mode || "Wash";
+            let sub = "";
+            if (phase === "pump1") sub = " (P1)";
+            else if (phase === "pump2") sub = " (P2)";
+            else if (phase === "extension") sub = " (Ext)";
+            
+            let cycleStr = (cycle && total) ? ` [${cycle}/${total}]` : "";
+            washEl.textContent = `${label}${sub}${cycleStr}`;
+            washChipEl.classList.remove("wash-countdown");
         } else {
             washEl.textContent = j.wash_label || j.wash_mode || "—";
             washChipEl.classList.remove("wash-countdown");
@@ -603,11 +623,50 @@
       btnAuto.classList.toggle("is-active", mode === "AUTO");
       btnAuto.setAttribute("aria-pressed", mode === "AUTO");
 
-      // Disable manual buttons in Auto mode
-      btnMotors.disabled = isAuto;
-      btnPumps.disabled = isAuto;
+      // Grey out manual buttons in Auto mode, but don't hard-disable them
+      // so they can show the 'Switch to MANUAL' warning when clicked.
+      // btnMotors.disabled = isAuto;
+      // btnPumps.disabled = isAuto;
+      // btnWashGentle.disabled = isAuto;
+      // btnWashDeep.disabled = isAuto;
       btnMotors.classList.toggle("is-disabled", isAuto);
       btnPumps.classList.toggle("is-disabled", isAuto);
+      btnWashGentle.classList.toggle("is-disabled", isAuto);
+      btnWashDeep.classList.toggle("is-disabled", isAuto);
+      // ALWAYS force-clear disabled attribute so buttons never get stuck
+      btnWashGentle.disabled = false;
+      btnWashDeep.disabled = false;
+      btnWashGentle.style.pointerEvents = "";
+      btnWashDeep.style.pointerEvents = "";
+
+      // UPDATE WASH BUTTONS ACCURACY
+      const isRunning = (resp.wash_sequence_state === "running");
+      const washMode = resp.wash_mode; // "soft" or "hard"
+      const curCycle = resp.wash_sequence_cycle;
+      const totCycle = resp.wash_sequence_total_cycles;
+      const phase = resp.wash_sequence_phase;
+      
+      let cycleStr = (curCycle && totCycle) ? ` [${curCycle}/${totCycle}]` : "";
+      if (phase === "initial_delay") cycleStr = " (Wait)";
+      else if (phase === "extension") cycleStr = " (Ext)";
+
+      // Gentle Button
+      if (isRunning && washMode === "soft") {
+        btnWashGentle.classList.add("is-active");
+        btnWashGentle.textContent = "Running" + cycleStr;
+      } else {
+        btnWashGentle.classList.remove("is-active");
+        if (!_washBusy) btnWashGentle.textContent = "Gentle Wash";
+      }
+
+      // Deep Button
+      if (isRunning && washMode === "hard") {
+        btnWashDeep.classList.add("is-active");
+        btnWashDeep.textContent = "Running" + cycleStr;
+      } else {
+        btnWashDeep.classList.remove("is-active");
+        if (!_washBusy) btnWashDeep.textContent = "Deep Wash";
+      }
 
       gridEl.innerHTML = "";
       for (const [id, row] of Object.entries(data)) {
@@ -796,8 +855,97 @@
       el.addEventListener("click", () => closeTempWarningModal(true));
     });
 
+    let _washBusy = false;
+    async function triggerManualWash(mode, btn) {
+      // Never block on mode — just warn
+      if (btnAuto.classList.contains("is-active")) {
+          flowStatusEl.classList.add("flow-err");
+          flowStatusEl.textContent = "Switch to MANUAL mode first.";
+          setTimeout(() => { flowStatusEl.textContent = ""; flowStatusEl.classList.remove("flow-err"); }, 3000);
+          return;
+      }
+      // Prevent double-click spam but NEVER use btn.disabled
+      if (_washBusy) return;
+      _washBusy = true;
+      
+      const originalText = btn.textContent;
+      btn.textContent = "Triggering…";
+      btn.style.opacity = "0.6";
+      
+      // Safety: always unlock after 3 seconds no matter what
+      const safetyTimer = setTimeout(() => {
+        _washBusy = false;
+        btn.textContent = originalText;
+        btn.style.opacity = "";
+        btn.classList.remove("btn-success-flash");
+      }, 3000);
+      
+      try {
+        const r = await fetch(apiUrl("/api/wash/trigger"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode })
+        });
+        const data = await r.json();
+        console.log("Wash trigger response:", data);
+        if (r.ok && data.ok) {
+          btn.textContent = "Running!";
+          btn.classList.add("btn-success-flash");
+          setTimeout(() => {
+            btn.textContent = originalText;
+            btn.style.opacity = "";
+            btn.classList.remove("btn-success-flash");
+            _washBusy = false;
+            clearTimeout(safetyTimer);
+            refreshStatus();
+          }, 2000);
+        } else {
+          throw new Error(data.error || "API returned not ok");
+        }
+      } catch (e) {
+        console.error("Manual wash trigger failed:", e);
+        btn.textContent = "Error!";
+        flowStatusEl.classList.add("flow-err");
+        flowStatusEl.textContent = "Wash trigger failed: " + e.message;
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.opacity = "";
+          _washBusy = false;
+          flowStatusEl.textContent = "";
+          flowStatusEl.classList.remove("flow-err");
+          clearTimeout(safetyTimer);
+        }, 2000);
+      }
+    }
+
+    // Forcefully destroy any pointer-event locks via inline style injection
+    const styleFix = document.createElement('style');
+    styleFix.innerHTML = `
+      .control-btn.is-disabled, .wash-gentle-btn.is-disabled, .wash-deep-btn.is-disabled {
+        pointer-events: auto !important;
+        cursor: pointer !important;
+      }
+    `;
+    document.head.appendChild(styleFix);
+
+    btnWashGentle.addEventListener("click", (e) => {
+      e.preventDefault();
+      console.log("Gentle Wash Clicked!");
+      triggerManualWash("soft", btnWashGentle);
+    });
+    btnWashDeep.addEventListener("click", (e) => {
+      e.preventDefault();
+      console.log("Deep Wash Clicked!");
+      triggerManualWash("hard", btnWashDeep);
+    });
+
     async function handleMotorToggle() {
-      if (btnManual.classList.contains("is-disabled")) return; 
+      if (btnAuto.classList.contains("is-active")) {
+          flowStatusEl.classList.add("flow-err");
+          flowStatusEl.textContent = "Switch to MANUAL mode to use these buttons.";
+          setTimeout(() => { flowStatusEl.textContent = ""; }, 3000);
+          return;
+      }
       const currentlyOn = btnMotors.getAttribute("aria-pressed") === "true";
       const nextOn = !currentlyOn;
       const r = await fetch(apiUrl("/api/motors"), {
@@ -809,7 +957,12 @@
     }
 
     async function handlePumpToggle() {
-      if (btnPumps.classList.contains("is-disabled")) return;
+      if (btnAuto.classList.contains("is-active")) {
+          flowStatusEl.classList.add("flow-err");
+          flowStatusEl.textContent = "Switch to MANUAL mode to use these buttons.";
+          setTimeout(() => { flowStatusEl.textContent = ""; }, 3000);
+          return;
+      }
       const currentlyOn = btnPumps.getAttribute("aria-pressed") === "true";
       const nextOn = !currentlyOn;
       const r = await fetch(apiUrl("/api/pumps"), {

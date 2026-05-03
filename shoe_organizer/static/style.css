@@ -240,74 +240,13 @@ main {
   flex-direction: row;
   flex-wrap: nowrap; /* Locked: never stack camera above slots */
   align-items: flex-start;
-  gap: 1rem;
-  min-width: 1100px; /* Ensure enough room for side-by-side layout */
-}
-
-.present-panel {
-  margin-bottom: 1.25rem;
-}
-
-.present-title {
-  margin: 0 0 0.5rem;
-  font-size: 1.15rem;
-  font-weight: 600;
-}
-
-.present-sub {
-  margin: 0 0 0.65rem;
-  font-size: 0.95rem;
-  color: var(--muted);
-  max-width: 52rem;
-  line-height: 1.45;
-}
-
-.present-label {
-  display: block;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 0.35rem;
-}
-
-.present-textarea {
-  display: block;
+  gap: 1.25rem;
   width: 100%;
-  max-width: 640px;
-  min-height: 6.5rem;
-  padding: 0.65rem 0.75rem;
-  font: inherit;
-  font-size: 1rem;
-  line-height: 1.4;
-  color: var(--text);
-  background: var(--card);
-  border: 1px solid #2a3544;
-  border-radius: 12px;
-  resize: vertical;
 }
 
-.present-textarea::placeholder {
-  color: #5a6a7e;
-}
-
-.present-textarea:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.ai-overlay-text {
-  position: relative;
-  left: auto;
-  right: auto;
-  bottom: auto;
-  margin-top: 0.85rem;
-  max-width: 640px;
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
-  background: var(--card);
-  border: 1px solid #2a3544;
-  pointer-events: none;
+.camera-section {
+  flex: 0 0 640px; /* Locked laptop size */
+  min-width: 0;
 }
 
 .camera-frame {
@@ -477,7 +416,7 @@ main {
 /* Slots 2-6 beside camera: 2 / 3 stacked, 4 / 5 stacked, 6 top-right (API order 2,3,4,5,6) */
 /* Same vertical span as #cam-stream (4:3 at 640px wide => 480px tall) */
 .bay-layout .grid {
-  flex: 1 1 0; /* fill remaining space, not fixed 20rem */
+  flex: 1 1 0;
   min-width: 0;
   margin-top: 0;
   min-height: 480px;
@@ -1637,6 +1576,7 @@ body.slot-modal-open {
 
 .camera-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   padding: 0.75rem;
   background: rgba(255, 255, 255, 0.05);
@@ -1674,6 +1614,40 @@ body.slot-modal-open {
   box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
 }
 
+.manual-wash-btns {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  flex: 1 1 100%;
+}
+
+.wash-gentle-btn {
+  background: rgba(34, 88, 66, 0.15) !important;
+  color: #7ee8a8 !important;
+  border-color: rgba(34, 88, 66, 0.4) !important;
+}
+
+.wash-gentle-btn:hover:not(.is-disabled) {
+  background: rgba(34, 88, 66, 0.3) !important;
+}
+
+.wash-deep-btn {
+  background: rgba(120, 55, 20, 0.15) !important;
+  color: #ffb86b !important;
+  border-color: rgba(120, 55, 20, 0.4) !important;
+}
+
+.wash-deep-btn:hover:not(.is-disabled) {
+  background: rgba(120, 55, 20, 0.3) !important;
+}
+
+.btn-success-flash {
+  background: #22c55e !important;
+  color: white !important;
+  border-color: #16a34a !important;
+  box-shadow: 0 0 15px rgba(34, 197, 94, 0.6);
+}
+
 .control-btn.stop-btn {
   background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.4);
@@ -1705,5 +1679,158 @@ body.slot-modal-open {
   opacity: 0.4;
   cursor: not-allowed;
   filter: grayscale(1);
-  pointer-events: none;
+  /* pointer-events: none; REMOVED — JS handles the warning instead */
+}
+
+/* ============================================================
+   SEPARATE PREMIUM DESIGN FOR 7-INCH LCD (800x480)
+   ============================================================ */
+@media (max-width: 1200px) {
+  body {
+    padding-top: 110px !important; /* Pushed even lower to guarantee header clearance */
+    padding-left: 0.3rem !important;
+    padding-right: 0.3rem !important;
+    padding-bottom: 0.3rem !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  main {
+    margin-top: 10px !important; 
+  }
+
+  .site-header { 
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    height: auto !important; /* Allow height to grow if needed */
+    min-height: 75px !important; /* Guaranteed minimum height */
+    z-index: 10000 !important;
+    margin-bottom: 0 !important;
+    display: block !important;
+    background: #0f172a !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.7) !important;
+  }
+  
+  .site-header__shell { 
+    height: auto !important;
+    min-height: 75px !important;
+    padding: 0.5rem 1rem !important;
+    border-radius: 0 !important;
+    border-bottom: 2px solid rgba(61, 156, 245, 0.4) !important;
+    background: rgba(28, 38, 54, 0.98) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    overflow: visible !important; /* Ensure text isn't clipped */
+  }
+  
+  .site-header__title { 
+    font-size: 1.3rem !important; 
+    line-height: 1.3 !important; 
+    white-space: nowrap !important;
+  }
+  .site-header__sub, .site-header__eyebrow, .site-header__tags, .site-header__aside { display: none !important; }
+
+  /* SIDE-BY-SIDE WITH FIXED CAMERA */
+  .bay-layout {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 0.5rem !important;
+    width: 100% !important;
+    align-items: flex-start !important;
+  }
+
+  /* LEFT COLUMN (1/3 area) */
+  .camera-section {
+    flex: 0 0 300px !important;
+    width: 300px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.35rem;
+  }
+
+  .camera-frame {
+    width: 300px !important;
+    height: 225px !important;
+    border-radius: 8px;
+    background: #000;
+    border: 1px solid rgba(61, 156, 245, 0.3);
+  }
+
+  /* NEAT BUTTON GRID */
+  .camera-controls {
+    width: 100% !important;
+    display: grid !important;
+    grid-template-columns: 1fr 1fr 1fr !important;
+    grid-auto-rows: 42px !important; /* Equal height rows */
+    gap: 0.3rem !important;
+    align-items: stretch !important;
+  }
+
+  .camera-controls .control-btn {
+    margin: 0 !important;
+    padding: 0.2rem !important;
+    font-size: 0.65rem !important;
+    border-radius: 6px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    background: rgba(45, 55, 75, 0.95) !important;
+  }
+
+  /* Special handling for Stop All */
+  #btn-stop-all { 
+    grid-column: span 3 !important; 
+    background: rgba(239, 68, 68, 0.25) !important;
+    color: #fca5a5 !important;
+    font-weight: 800 !important;
+  }
+
+  .manual-wash-btns, .mode-toggle { display: contents !important; }
+
+  /* RIGHT COLUMN: Fill the rest */
+  .bay-layout .grid {
+    flex: 1 1 0 !important;
+    width: auto !important;
+    margin-top: 0 !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    grid-template-rows: auto !important; /* Allow growing */
+    gap: 0.4rem !important;
+  }
+
+  .slot-card {
+    padding: 0.4rem !important;
+    border-radius: 10px !important;
+    min-height: 0 !important;
+  }
+
+  .slot-card__mark { width: 1.6rem !important; height: 1.6rem !important; font-size: 0.7rem !important; margin-bottom: 0.2rem !important; }
+  .slot-card__headline { font-size: 0.65rem !important; -webkit-line-clamp: 1; margin-bottom: 0.2rem !important; }
+  
+  /* Compact Footer for LCD */
+  .slot-card__footer { 
+    display: flex !important; 
+    margin-top: 0.3rem !important;
+    padding-top: 0.3rem !important;
+    border-top: 1px solid rgba(255,255,255,0.05) !important;
+    gap: 0.3rem !important;
+    flex-wrap: wrap !important;
+  }
+
+  .slot-card__stat { font-size: 0.6rem !important; }
+  .slot-card__cta { 
+    min-height: 30px !important; 
+    min-width: 0 !important;
+    padding: 0.2rem 0.4rem !important; 
+    font-size: 0.6rem !important; 
+  }
+
+  .ai-overlay { padding: 0.3rem !important; }
+  .ai-chip { padding: 0.2rem 0.35rem !important; }
+  .ai-chip-k { font-size: 0.5rem !important; }
+  .ai-chip-v { font-size: 0.7rem !important; }
+  .ai-reason, .ai-dirt { display: none !important; }
 }

@@ -136,10 +136,24 @@ def create_app() -> Flask:
     def api_stop_all():
         o = orch()
         stop_all_actuators()
+        o._wash_seq.force_idle() # Also stop the server-side sequence
         # Also stop server-side ventilation if any
         for cid in _storage_id_set(o.cfg["compartments"]):
             o.sensors.set_ventilation(cid, False)
         return jsonify({"ok": True, "message": "All actuators stopped."})
+
+    @app.post("/api/wash/trigger")
+    def api_wash_trigger():
+        body = request.get_json(force=True, silent=True) or {}
+        mode = body.get("mode", "soft")
+        print(f">>> [API] POST /api/wash/trigger | body={body}")
+        if mode not in ("soft", "hard"):
+            return jsonify({"ok": False, "error": "invalid_mode"}), 400
+        o = orch()
+        if not o:
+            return jsonify({"ok": False, "error": "orchestrator_not_ready"}), 503
+        o.trigger_wash(mode)
+        return jsonify({"ok": True, "mode": mode})
 
     @app.get("/api/camera/stream")
     def camera_stream():
@@ -336,16 +350,27 @@ def create_app() -> Flask:
         """
         return jsonify({"ok": True, "service": "shoe_organizer"})
 
-    @app.get("/api/esp32/actuators")
+    @app.route("/api/esp32/actuators", methods=["GET", "POST"])
     def esp32_actuators():
         """
         ESP32 poll: when the bay camera sees a shoe, pump_on and fan_on are true.
         Includes global overrides for manual control from the dashboard.
         """
-        res = orch().esp32_actuator_snapshot()
+        o = orch()
+        
+        # If ESP32 is POSTing its status, sync the server's countdown to match the ESP32's timer.
+        if request.method == "POST":
+            body = request.get_json(force=True, silent=True) or {}
+            ws = body.get("wash_state")
+            cd = body.get("countdown")
+            if ws == "DELAY" and cd is not None:
+                # Sync the server's sequence deadline to match the ESP32's remaining time.
+                o._wash_seq.sync_countdown(float(cd))
+
+        res = o.esp32_actuator_snapshot()
         if res.get("ok"):
-            res["motors_on"] = bool(res.get("motors_on") or get_global_motors())
-            res["pumps_on"] = bool(res.get("pumps_on") or get_global_pumps())
+            res["manual_motors_on"] = get_global_motors()
+            res["manual_pumps_on"] = get_global_pumps()
             res["mode"] = get_esp32_mode()
         return jsonify(res)
 
@@ -518,13 +543,29 @@ def create_app() -> Flask:
             row["storage_fan_on"] = get_slot_fan(cid)
         
         # Return structured response so we don't lose global states if snap is empty
-        return jsonify({
+        res = {
             "ok": True,
             "slots": snap,
             "global_motors_on": gm,
             "global_pumps_on": gp,
             "mode": get_esp32_mode(),
-        })
+        }
+        # Add wash sequence info
+        try:
+            wash_snap = o.esp32_actuator_snapshot()
+            if wash_snap.get("ok"):
+                res.update({
+                    "wash_sequence_state": wash_snap.get("wash_sequence_state"),
+                    "wash_sequence_phase": wash_snap.get("wash_sequence_phase"),
+                    "wash_sequence_cycle": wash_snap.get("wash_sequence_cycle"),
+                    "wash_sequence_total_cycles": wash_snap.get("wash_sequence_total_cycles"),
+                    "wash_sequence_countdown": wash_snap.get("wash_sequence_countdown"),
+                    "wash_mode": wash_snap.get("wash_mode"),
+                })
+        except:
+            pass
+            
+        return jsonify(res)
 
     @app.post("/api/vent")
     def api_vent():

@@ -20,6 +20,7 @@ from .shoe_taxonomy import (
 from .shoe_type_smoothing import ShoeTypeSmoother
 from .text_presence import analyze_presented_text
 from .vision_service import ShoeCategory, VisionResult, WebcamCapture
+from .slot_fan_state import get_esp32_mode, set_slot_fan
 from .wash_actuator_sequence import WashBayActuatorSequence
 from .wash_decision import WashPlan, decide_wash, wash_ui_label
 
@@ -90,11 +91,10 @@ class ShoeOrganizerOrchestrator:
         self._serial_bridge = SerialBridge(self.cfg)
         self._serial_bridge.start()
         self._active_routing: _ActiveRouting | None = None
-        self._wash_seq = WashBayActuatorSequence(self.cfg)
+        self._wash_seq = WashBayActuatorSequence(self.cfg.get("wash_actuators", {}))
 
     def _esp32_actuator_quiet(self) -> dict:
-        """Turn off wash outputs and reset the timed sequence (camera lost / errors / text mode)."""
-        self._wash_seq.force_idle()
+        """Return a snapshot representing all outputs OFF (no side effects)."""
         return {
             "pump1_on": False,
             "pump2_on": False,
@@ -212,7 +212,6 @@ class ShoeOrganizerOrchestrator:
                     catalog_style=cs,
                     catalog_score=csc,
                 )
-            from .slot_fan_state import set_slot_fan
             for cid in self.cfg["compartments"]["storage_ids"]:
                 self.sensors.set_ventilation(cid, False)
                 set_slot_fan(cid, False)
@@ -418,7 +417,15 @@ class ShoeOrganizerOrchestrator:
         wash_mode = str(detail.get("wash_mode") or "").strip().lower()
         shoe_clean = bool(raw and wash_mode == "none")
         st = "clean" if shoe_clean else ("wash" if raw else "idle")
-        seq = self._wash_seq.tick(raw_shoe=raw, shoe_clean=shoe_clean)
+        is_auto = (get_esp32_mode().upper() == "AUTO")
+        seq = self._wash_seq.tick(raw_shoe=raw, shoe_clean=shoe_clean, auto_start=is_auto)
+        
+        # If a manual override is active (from the web UI), it wins
+        if self._wash_seq.manual_mode_override:
+            wash_mode = self._wash_seq.manual_mode_override
+            # Force shoe_detected so the ESP32 internal engine doesn't skip the wash
+            raw = True 
+
         return {
             "ok": True,
             "error": None,
@@ -428,6 +435,10 @@ class ShoeOrganizerOrchestrator:
             "status": st,
             **seq,
         }
+
+    def trigger_wash(self, mode: str) -> None:
+        print(f">>> [ORCHESTRATOR] Manual wash trigger received: {mode}")
+        self._wash_seq.trigger_manual(mode)
 
     def analyze_text_live(self, description: str) -> dict:
         """Same JSON shape as camera analyze, from free text only (no images)."""
@@ -551,12 +562,19 @@ class ShoeOrganizerOrchestrator:
             detail["sports_edge_density_min"] = round(float(vm.get("sports_edge_density_min", 0.09)), 4)
         if vm.get("rule_based_pipeline") and detail.get("sports_fusion_threshold") is None:
             detail["sports_fusion_threshold"] = round(float(vm.get("sports_fusion_threshold", 0.48)), 4)
-        if vm.get("rule_based_pipeline") and detail.get("edge_density") is not None:
-            log.debug(
-                "rule shoe type: fusion=%s thr=%s edge=%s category=%s",
-                detail.get("sports_fusion_score"),
-                detail.get("sports_fusion_threshold"),
-                detail.get("edge_density"),
-                smooth_cat,
-            )
-        return {"ok": True, "error": None, **detail}
+        
+        # Include the wash sequence state so the UI stays in sync
+        shoe_clean = bool(raw and detail.get("wash_mode") == "none")
+        is_auto = (get_esp32_mode().upper() == "AUTO")
+        seq = self._wash_seq.tick(raw_shoe=raw, shoe_clean=shoe_clean, auto_start=is_auto)
+        
+        # If manual override is active, it wins
+        if self._wash_seq._manual_mode_override:
+            detail["wash_mode"] = self._wash_seq._manual_mode_override
+            detail["wash_label"] = "Gentle Wash" if detail["wash_mode"] == "soft" else "Deep Wash"
+            detail["wash_reason"] = "Manual trigger"
+            # Force shoe_detected so the UI doesn't hide the wash stats
+            detail["is_shoe"] = True
+            detail["confirmed_is_shoe"] = True
+
+        return {"ok": True, "error": None, **detail, **seq}
